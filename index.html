@@ -132,7 +132,9 @@
         <h2>Access Denied &mdash; Payment Required</h2>
         <p>This resource requires payment to access. Submit your crypto wallet address to proceed.</p>
         <p style="font-size: 0.85rem; color: #aaa;">Send payment to: <code>5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft</code></p>
+        <p style="font-size: 0.85rem; color: #aaa;">Include this reference ID in the transaction memo: <code id="ref-id"></code></p>
 
+        <!--
         <div class="wallet-form">
             <label for="wallet-input">Wallet Address</label>
             <input type="text" id="wallet-input" placeholder="0x... or bc1... or equivalent" autocomplete="off" spellcheck="false">
@@ -140,6 +142,7 @@
             <p id="wallet-success" class="wallet-success">Wallet verified on-chain. Granting access...</p>
             <button id="wallet-submit">Submit &amp; Access</button>
         </div>
+        -->
 
         <hr class="divider">
         <p style="font-size: 0.8rem; color: #888;">Or pass a valid token via query parameter:</p>
@@ -207,9 +210,9 @@
             var params = new URLSearchParams(window.location.search);
             var wall = document.getElementById('payment-wall');
             var content = document.getElementById('gated-content');
-            var walletInput = document.getElementById('wallet-input');
-            var walletError = document.getElementById('wallet-error');
-            var walletSubmit = document.getElementById('wallet-submit');
+            // var walletInput = document.getElementById('wallet-input');
+            // var walletError = document.getElementById('wallet-error');
+            // var walletSubmit = document.getElementById('wallet-submit');
 
             function grantAccess() {
                 wall.style.display = 'none';
@@ -218,6 +221,15 @@
 
             function showWall() {
                 wall.style.display = 'block';
+                // Generate a unique alphanumeric reference ID for this visit
+                var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                var refId = '';
+                var arr = new Uint8Array(16);
+                crypto.getRandomValues(arr);
+                for (var i = 0; i < arr.length; i++) {
+                    refId += chars.charAt(arr[i] % chars.length);
+                }
+                document.getElementById('ref-id').textContent = refId;
             }
 
             // --- Bot detection ---
@@ -273,6 +285,7 @@
                 return null;
             }
 
+            /*
             // --- On-chain verification ---
             var walletSuccess = document.getElementById('wallet-success');
 
@@ -288,8 +301,6 @@
                 })
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
-                    // Valid address if RPC returns a result (even 0x0 balance is a real address)
-                    // An invalid address would return an error
                     if (data.error) return { valid: false, reason: 'Address not found on Ethereum network.' };
                     return { valid: true, chain: 'Ethereum' };
                 });
@@ -302,7 +313,7 @@
                     return r.json();
                 })
                 .then(function (data) {
-                    if (data.valid === false) return data; // pass through error
+                    if (data.valid === false) return data;
                     if (data.address) return { valid: true, chain: 'Bitcoin' };
                     return { valid: false, reason: 'Address not found on Bitcoin network.' };
                 });
@@ -321,7 +332,6 @@
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
                     if (data.error) return { valid: false, reason: 'Address not found on Solana network.' };
-                    // Account exists even if result is null (valid address format accepted by RPC)
                     return { valid: true, chain: 'Solana' };
                 });
             }
@@ -354,6 +364,7 @@
                 walletError.style.display = 'none';
                 walletSuccess.style.display = 'none';
             }
+            */
 
             // --- Access logic ---
             var debugMode = params.get('view') === 'bot';
@@ -379,6 +390,7 @@
                 showWall();
             }
 
+            /*
             // Handle wallet submission with on-chain verification
             walletSubmit.addEventListener('click', function () {
                 var address = walletInput.value.trim();
@@ -417,6 +429,7 @@
                     walletSubmit.click();
                 }
             });
+            */
         })();
     </script>
 </body>
