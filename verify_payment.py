@@ -22,7 +22,7 @@ RPC_DEVNET = "https://api.devnet.solana.com"
 RPC_MAINNET = "https://api.mainnet-beta.solana.com"
 
 SOLANA_RPC = os.environ.get("SOLANA_RPC_URL", RPC_DEVNET if DEBUG else RPC_MAINNET)
-USDC_MINT = USDC_MINT_DEVNET if DEBUG else USDC_MINT_MAINNET
+USDC_MINT = os.environ.get("USDC_MINT", USDC_MINT_DEVNET if DEBUG else USDC_MINT_MAINNET)
 MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 MIN_PAYMENT = 0.01
 

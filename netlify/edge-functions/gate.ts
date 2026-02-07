@@ -266,7 +266,8 @@ export default async function gate(request: Request, context: Context) {
   const debug = Deno.env.get("DEBUG") !== "false"; // true unless explicitly "false"
   const rpcUrl =
     Deno.env.get("SOLANA_RPC_URL") || (debug ? RPC_DEVNET : RPC_MAINNET);
-  const usdcMint = debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET;
+  const usdcMint =
+    Deno.env.get("USDC_MINT") || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
 
   // Always allow public endpoints
   if (isPublicPath(url.pathname)) {
