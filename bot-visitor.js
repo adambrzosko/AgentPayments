@@ -21,7 +21,7 @@ const USDC_DECIMALS = 6;
 const DEVNET_RPC = "https://api.devnet.solana.com";
 
 async function parseLandingPage() {
-  const filePath = "file://" + path.resolve(__dirname, "index.html");
+  const filePath = "file://" + path.resolve(__dirname, "index.html"); // make this inputable
   console.log("Launching headless browser...");
 
   const browser = await puppeteer.launch({ headless: true });
