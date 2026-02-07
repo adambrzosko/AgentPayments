@@ -41,13 +41,73 @@
             font-size: 0.9rem;
             word-break: break-all;
         }
+        .payment-wall .divider {
+            border: none;
+            border-top: 1px solid #3a3a5e;
+            margin: 1.5rem 0;
+        }
+        .wallet-form label {
+            display: block;
+            color: #aaa;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+        }
+        .wallet-form input[type="text"] {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid #3a3a5e;
+            border-radius: 8px;
+            background: #2d2d4e;
+            color: #fff;
+            font-size: 0.95rem;
+            font-family: monospace;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .wallet-form input[type="text"]:focus {
+            border-color: #7bed9f;
+        }
+        .wallet-form input[type="text"]::placeholder {
+            color: #666;
+        }
+        .wallet-form button {
+            margin-top: 1rem;
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 8px;
+            background: #7bed9f;
+            color: #1a1a2e;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .wallet-form button:hover {
+            background: #5fd882;
+        }
+        .wallet-error {
+            color: #ff6b6b;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            display: none;
+        }
     </style>
 </head>
 <body>
     <!-- Payment wall: shown when access_token is missing or invalid -->
     <div id="payment-wall" class="payment-wall">
         <h2>Access Denied &mdash; Payment Required</h2>
-        <p>This resource requires a valid access token. Provide the correct token as a query parameter to proceed.</p>
+        <p>This resource requires payment to access. Submit your crypto wallet address to proceed.</p>
+
+        <div class="wallet-form">
+            <label for="wallet-input">Wallet Address</label>
+            <input type="text" id="wallet-input" placeholder="0x... or bc1... or equivalent" autocomplete="off" spellcheck="false">
+            <p id="wallet-error" class="wallet-error">Please enter a valid wallet address.</p>
+            <button id="wallet-submit">Submit &amp; Access</button>
+        </div>
+
+        <hr class="divider">
+        <p style="font-size: 0.8rem; color: #888;">Or pass a valid token via query parameter:</p>
         <p><code>?access_token=&lt;your_token&gt;</code></p>
     </div>
 
@@ -110,11 +170,107 @@
     <script>
         (function () {
             var params = new URLSearchParams(window.location.search);
-            if (params.get('access_token') === 'pay2access') {
-                document.getElementById('gated-content').style.display = 'block';
-            } else {
-                document.getElementById('payment-wall').style.display = 'block';
+            var wall = document.getElementById('payment-wall');
+            var content = document.getElementById('gated-content');
+            var walletInput = document.getElementById('wallet-input');
+            var walletError = document.getElementById('wallet-error');
+            var walletSubmit = document.getElementById('wallet-submit');
+
+            function grantAccess() {
+                wall.style.display = 'none';
+                content.style.display = 'block';
             }
+
+            function showWall() {
+                wall.style.display = 'block';
+            }
+
+            // --- Bot detection ---
+            function isBot() {
+                var ua = navigator.userAgent || '';
+
+                // 1. WebDriver flag (Selenium, Puppeteer, Playwright, etc.)
+                if (navigator.webdriver) return true;
+
+                // 2. Known bot/crawler user-agent patterns
+                var botPatterns = [
+                    /bot\b/i, /crawl/i, /spider/i, /slurp/i, /mediapartners/i,
+                    /headless/i, /phantom/i, /puppeteer/i, /playwright/i,
+                    /selenium/i, /wget/i, /curl/i, /fetch/i, /python/i,
+                    /httpx/i, /axios/i, /node-fetch/i, /go-http/i, /java\//i,
+                    /scrapy/i, /lighthouse/i, /pagespeed/i, /googlebot/i,
+                    /bingbot/i, /yandexbot/i, /baiduspider/i, /duckduckbot/i,
+                    /facebookexternalhit/i, /twitterbot/i, /rogerbot/i,
+                    /linkedinbot/i, /embedly/i, /quora link/i, /showyoubot/i,
+                    /outbrain/i, /pinterest/i, /applebot/i, /semrushbot/i,
+                    /ahrefsbot/i, /mj12bot/i, /dotbot/i, /petalbot/i
+                ];
+                for (var i = 0; i < botPatterns.length; i++) {
+                    if (botPatterns[i].test(ua)) return true;
+                }
+
+                // 3. Headless Chrome detection
+                if (/HeadlessChrome/.test(ua)) return true;
+
+                // 4. Missing browser plugins (headless browsers often have none)
+                if (navigator.plugins && navigator.plugins.length === 0 &&
+                    /Chrome/.test(ua) && !/Mobile/.test(ua)) return true;
+
+                // 5. Missing languages
+                if (!navigator.languages || navigator.languages.length === 0) return true;
+
+                // 6. Automation-specific properties
+                if (window._phantom || window.__nightmare || window.callPhantom) return true;
+                if (document.__selenium_unwrapped || document.__webdriver_evaluate ||
+                    document.__driver_evaluate) return true;
+
+                // 7. Chrome-specific: missing chrome runtime object in Chrome UA
+                if (/Chrome/.test(ua) && !window.chrome) return true;
+
+                return false;
+            }
+
+            // --- Wallet validation ---
+            function isValidWallet(addr) {
+                if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return true;               // Ethereum
+                if (/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{24,61}$/.test(addr)) return true; // Bitcoin
+                if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return true;      // Solana
+                return false;
+            }
+
+            // --- Access logic ---
+
+            // 1. Valid token in URL always grants access
+            if (params.get('access_token') === 'pay2access') {
+                grantAccess();
+                return;
+            }
+
+            // 2. If visitor is human → show content directly
+            if (!isBot()) {
+                grantAccess();
+                return;
+            }
+
+            // 3. Bot detected → show payment wall
+            showWall();
+
+            // Handle wallet submission (for bots that can interact with forms)
+            walletSubmit.addEventListener('click', function () {
+                var address = walletInput.value.trim();
+                if (isValidWallet(address)) {
+                    walletError.style.display = 'none';
+                    grantAccess();
+                } else {
+                    walletError.style.display = 'block';
+                }
+            });
+
+            walletInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    walletSubmit.click();
+                }
+            });
         })();
     </script>
 </body>
