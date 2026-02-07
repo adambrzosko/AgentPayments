@@ -3,7 +3,7 @@ import type { Context } from "https://edge.netlify.com";
 const COOKIE_NAME = "__agp_verified";
 const COOKIE_MAX_AGE = 86400; // 24 hours
 const KEY_PREFIX = "ag_";
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"; // devnet USDC
 const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 const MIN_PAYMENT = 0.01;
 
@@ -261,7 +261,7 @@ export default async function gate(request: Request, context: Context) {
   const walletAddress = Deno.env.get("HOME_WALLET_ADDRESS") || "";
   const debug = Deno.env.get("DEBUG") !== "false"; // true unless explicitly "false"
   const rpcUrl =
-    Deno.env.get("SOLANA_RPC_URL") || "https://api.mainnet-beta.solana.com";
+    Deno.env.get("SOLANA_RPC_URL") || "https://api.devnet.solana.com";
 
   // Always allow public endpoints
   if (isPublicPath(url.pathname)) {
