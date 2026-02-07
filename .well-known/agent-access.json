@@ -1,18 +1,20 @@
 {
   "name": "AgentPayments Access Program",
-  "description": "This site gates AI agent access behind a paid API key. To obtain a key, send a Solana USDC payment with a unique identifier as the memo. Once verified, use the key in the X-Agent-Key header on all requests.",
-  "protocol_version": "0.1",
+  "description": "This site gates AI agent access. Request any page without a key to receive a unique agent key and payment instructions. Once you have paid, include the key in all requests.",
+  "protocol_version": "0.2",
+  "flow": [
+    "1. Make any request to the site (e.g. GET /). You will receive a 402 response containing your unique agent key and payment details.",
+    "2. Send 0.01 USDC on Solana to the wallet address provided, with your agent key as the transaction memo.",
+    "3. Retry your request with the header: X-Agent-Key: <your_key>"
+  ],
   "access": {
     "header": "X-Agent-Key",
-    "method": "Send the key as the value of the X-Agent-Key HTTP header with every request."
+    "method": "Include the key as the value of the X-Agent-Key HTTP header with every request."
   },
   "payment": {
     "chain": "solana",
     "token": "USDC",
-    "wallet_address": "PLACEHOLDER_SOLANA_WALLET_ADDRESS",
-    "price": "1.00",
-    "currency": "USDC",
-    "instructions": "Send the specified amount of USDC on Solana to the wallet address above. Include your desired API key as the transaction memo. Once the payment is confirmed on-chain, your key will be activated."
-  },
-  "contact": "admin@agentpayments.example.com"
+    "amount": "0.01",
+    "instructions": "The wallet address is returned in the 402 response when you first hit the site. Send USDC on Solana to that address with your agent key as the memo."
+  }
 }

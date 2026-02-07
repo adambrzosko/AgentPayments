@@ -2,8 +2,12 @@ import type { Context } from "https://edge.netlify.com";
 
 const COOKIE_NAME = "__agp_verified";
 const COOKIE_MAX_AGE = 86400; // 24 hours
+const KEY_PREFIX = "ag_";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const MIN_PAYMENT = 0.01;
 
-// --- Crypto helpers ---
+// ─── Crypto helpers ──────────────────────────────────────────────
 
 async function hmacSign(data: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -23,7 +27,133 @@ async function hmacSign(data: string, secret: string): Promise<string> {
     .join("");
 }
 
-// --- Cookie helpers ---
+// ─── Agent key helpers ───────────────────────────────────────────
+
+async function generateAgentKey(secret: string): Promise<string> {
+  const random = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  const sig = await hmacSign(random, secret);
+  return `${KEY_PREFIX}${random}_${sig.slice(0, 16)}`;
+}
+
+async function isValidAgentKey(
+  key: string,
+  secret: string,
+): Promise<boolean> {
+  if (!key.startsWith(KEY_PREFIX)) return false;
+  const rest = key.slice(KEY_PREFIX.length);
+  const underscoreIndex = rest.indexOf("_");
+  if (underscoreIndex === -1) return false;
+  const random = rest.slice(0, underscoreIndex);
+  const sig = rest.slice(underscoreIndex + 1);
+  const expected = await hmacSign(random, secret);
+  return sig === expected.slice(0, 16);
+}
+
+// ─── Solana payment verification ─────────────────────────────────
+
+async function verifyPaymentOnChain(
+  agentKey: string,
+  walletAddress: string,
+  rpcUrl: string,
+): Promise<boolean> {
+  try {
+    // Get recent transaction signatures for the wallet
+    const sigsResp = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getSignaturesForAddress",
+        params: [walletAddress, { limit: 50 }],
+      }),
+    });
+    const sigsData = await sigsResp.json();
+    const signatures = sigsData.result || [];
+
+    for (const sigInfo of signatures) {
+      if (sigInfo.err) continue;
+
+      const txResp = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTransaction",
+          params: [
+            sigInfo.signature,
+            { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+          ],
+        }),
+      });
+      const txData = await txResp.json();
+      const tx = txData.result;
+      if (!tx) continue;
+
+      const instructions = tx.transaction?.message?.instructions || [];
+      const innerInstructions = tx.meta?.innerInstructions || [];
+
+      // Flatten all instructions (top-level + inner)
+      const allInstructions = [
+        ...instructions,
+        ...innerInstructions.flatMap(
+          (inner: { instructions: unknown[] }) => inner.instructions || [],
+        ),
+      ];
+
+      let hasMemo = false;
+      let hasPayment = false;
+
+      for (const ix of allInstructions) {
+        // Check for memo matching the agent key
+        if (
+          ix.program === "spl-memo" ||
+          ix.programId === MEMO_PROGRAM
+        ) {
+          const memo = typeof ix.parsed === "string" ? ix.parsed : "";
+          if (memo.includes(agentKey)) {
+            hasMemo = true;
+          }
+        }
+
+        // Check for USDC transfer to our wallet
+        if (ix.program === "spl-token") {
+          const parsed = ix.parsed || {};
+          if (
+            parsed.type === "transfer" ||
+            parsed.type === "transferChecked"
+          ) {
+            const info = parsed.info || {};
+
+            // Check mint for transferChecked
+            if (parsed.type === "transferChecked" && info.mint !== USDC_MINT) {
+              continue;
+            }
+
+            // Check amount
+            const uiAmount =
+              info.tokenAmount?.uiAmount ??
+              parseFloat(info.amount || "0") / 1e6;
+            if (uiAmount >= MIN_PAYMENT) {
+              hasPayment = true;
+            }
+          }
+        }
+      }
+
+      if (hasMemo && hasPayment) {
+        return true;
+      }
+    }
+  } catch (e) {
+    console.error("[gate] Solana RPC error:", e);
+  }
+
+  return false;
+}
+
+// ─── Cookie helpers ──────────────────────────────────────────────
 
 function getCookie(request: Request, name: string): string | null {
   const cookies = request.headers.get("cookie") || "";
@@ -37,21 +167,17 @@ async function isValidCookie(
 ): Promise<boolean> {
   const cookie = getCookie(request, COOKIE_NAME);
   if (!cookie) return false;
-
   const dotIndex = cookie.indexOf(".");
   if (dotIndex === -1) return false;
-
   const timestamp = cookie.slice(0, dotIndex);
   const signature = cookie.slice(dotIndex + 1);
   const ts = parseInt(timestamp, 10);
-
   if (isNaN(ts) || Date.now() - ts > COOKIE_MAX_AGE * 1000) return false;
-
   const expected = await hmacSign(timestamp, secret);
   return signature === expected;
 }
 
-// --- Request helpers ---
+// ─── Request helpers ─────────────────────────────────────────────
 
 function isPublicPath(pathname: string): boolean {
   if (pathname === "/robots.txt") return true;
@@ -65,26 +191,17 @@ function isBrowser(request: Request): boolean {
   return !!(secFetchMode || secFetchDest);
 }
 
-function denyResponse(message: string): Response {
-  return new Response(
-    JSON.stringify({
-      error: "forbidden",
-      message,
-      details: "GET /.well-known/agent-access.json for access instructions.",
-    }),
-    {
-      status: 403,
-      headers: { "Content-Type": "application/json" },
-    },
-  );
+function jsonResponse(body: Record<string, unknown>, status: number): Response {
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
-// --- Challenge page ---
+// ─── Browser challenge page ──────────────────────────────────────
 
 function challengePage(returnTo: string, nonce: string): Response {
-  // Sanitize returnTo to prevent open redirect
   const safePath = returnTo.startsWith("/") ? returnTo : "/";
-
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -112,158 +229,189 @@ function challengePage(returnTo: string, nonce: string): Response {
     (function() {
       var status = document.getElementById("status");
       var spinner = document.getElementById("spinner");
-
-      function fail(msg) {
-        spinner.style.display = "none";
-        status.className = "fail";
-        status.textContent = msg;
-      }
-
-      // 1. Check for automation
-      if (navigator.webdriver) {
-        return fail("Automated browser detected.");
-      }
-
-      // 2. Verify canvas rendering works (headless often lacks GPU)
-      var c = document.createElement("canvas");
-      c.width = 200; c.height = 50;
+      function fail(msg) { spinner.style.display = "none"; status.className = "fail"; status.textContent = msg; }
+      if (navigator.webdriver) return fail("Automated browser detected.");
+      var c = document.createElement("canvas"); c.width = 200; c.height = 50;
       var ctx = c.getContext("2d");
       if (!ctx) return fail("Canvas unavailable.");
-      ctx.font = "18px Arial";
-      ctx.fillStyle = "#1a1a2e";
-      ctx.fillText("verify", 10, 30);
+      ctx.font = "18px Arial"; ctx.fillStyle = "#1a1a2e"; ctx.fillText("verify", 10, 30);
       var data = c.toDataURL();
       if (!data || data.length < 100) return fail("Canvas check failed.");
-
-      // 3. Check for basic DOM APIs headless environments sometimes lack
-      if (typeof window.innerWidth === "undefined" || window.innerWidth === 0) {
-        return fail("Browser environment check failed.");
-      }
-
-      // All checks passed — submit nonce to verify endpoint
-      var form = document.createElement("form");
-      form.method = "POST";
-      form.action = "/__challenge/verify";
-
-      var fields = {
-        nonce: ${JSON.stringify(nonce)},
-        return_to: ${JSON.stringify(safePath)},
-        fp: data.slice(22, 86)
-      };
-
-      for (var key in fields) {
-        var input = document.createElement("input");
-        input.type = "hidden";
-        input.name = key;
-        input.value = fields[key];
-        form.appendChild(input);
-      }
-
-      document.body.appendChild(form);
-      form.submit();
+      if (typeof window.innerWidth === "undefined" || window.innerWidth === 0) return fail("Browser check failed.");
+      var form = document.createElement("form"); form.method = "POST"; form.action = "/__challenge/verify";
+      var fields = { nonce: ${JSON.stringify(nonce)}, return_to: ${JSON.stringify(safePath)}, fp: data.slice(22, 86) };
+      for (var key in fields) { var input = document.createElement("input"); input.type = "hidden"; input.name = key; input.value = fields[key]; form.appendChild(input); }
+      document.body.appendChild(form); form.submit();
     })();
   </script>
 </body>
 </html>`;
-
   return new Response(html, {
     status: 200,
-    headers: {
-      "Content-Type": "text/html",
-      "Cache-Control": "no-store",
-    },
+    headers: { "Content-Type": "text/html", "Cache-Control": "no-store" },
   });
 }
 
-// --- Main handler ---
+// ─── Main handler ────────────────────────────────────────────────
 
 export default async function gate(request: Request, context: Context) {
   const url = new URL(request.url);
-  const secret = Deno.env.get("CHALLENGE_SECRET") || "default-secret-change-me";
+  const secret =
+    Deno.env.get("CHALLENGE_SECRET") || "default-secret-change-me";
+  const walletAddress = Deno.env.get("HOME_WALLET_ADDRESS") || "";
+  const debug = Deno.env.get("DEBUG") !== "false"; // true unless explicitly "false"
+  const rpcUrl =
+    Deno.env.get("SOLANA_RPC_URL") || "https://api.mainnet-beta.solana.com";
 
   // Always allow public endpoints
   if (isPublicPath(url.pathname)) {
     return context.next();
   }
 
-  // Handle challenge verification POST
+  // Handle browser challenge verification POST
   if (url.pathname === "/__challenge/verify" && request.method === "POST") {
     const formData = await request.formData();
     const nonce = formData.get("nonce")?.toString() || "";
     const returnTo = formData.get("return_to")?.toString() || "/";
     const fp = formData.get("fp")?.toString() || "";
 
-    // Validate nonce: must be a recently-signed value
     const dotIndex = nonce.indexOf(".");
     if (dotIndex === -1 || !fp || fp.length < 10) {
-      return denyResponse("Challenge verification failed.");
+      return jsonResponse(
+        { error: "forbidden", message: "Challenge verification failed." },
+        403,
+      );
     }
 
     const nonceTs = nonce.slice(0, dotIndex);
     const nonceSig = nonce.slice(dotIndex + 1);
     const ts = parseInt(nonceTs, 10);
 
-    // Nonce must be less than 5 minutes old
     if (isNaN(ts) || Date.now() - ts > 300_000) {
-      return denyResponse("Challenge expired. Please reload the page.");
+      return jsonResponse(
+        { error: "forbidden", message: "Challenge expired. Reload the page." },
+        403,
+      );
     }
 
     const expectedSig = await hmacSign(`nonce:${nonceTs}`, secret);
     if (nonceSig !== expectedSig) {
-      return denyResponse("Invalid challenge.");
+      return jsonResponse(
+        { error: "forbidden", message: "Invalid challenge." },
+        403,
+      );
     }
 
-    // Issue signed cookie
     const now = Date.now().toString();
     const cookieSig = await hmacSign(now, secret);
-    const cookieValue = `${now}.${cookieSig}`;
     const safePath = returnTo.startsWith("/") ? returnTo : "/";
 
     return new Response(null, {
       status: 302,
       headers: {
         Location: safePath,
-        "Set-Cookie": `${COOKIE_NAME}=${encodeURIComponent(cookieValue)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`,
+        "Set-Cookie": `${COOKIE_NAME}=${encodeURIComponent(`${now}.${cookieSig}`)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`,
       },
     });
   }
 
-  // Non-browser clients (no Sec-Fetch headers) → require API key
+  // ── Agent flow (non-browser) ───────────────────────────────────
   if (!isBrowser(request)) {
     const agentKey = request.headers.get("X-Agent-Key");
 
+    // No key → generate one and return 402 with payment instructions
     if (!agentKey) {
-      return denyResponse(
-        "Non-browser access requires a valid API key. Send it via the X-Agent-Key header.",
+      const newKey = await generateAgentKey(secret);
+      return jsonResponse(
+        {
+          error: "payment_required",
+          message:
+            "Access requires a paid API key. A key has been generated for you below. " +
+            "Send a USDC payment on Solana with this key as the memo to activate it, " +
+            "then retry your request with the X-Agent-Key header.",
+          your_key: newKey,
+          payment: {
+            chain: "solana",
+            token: "USDC",
+            amount: String(MIN_PAYMENT),
+            wallet_address: walletAddress,
+            memo: newKey,
+            instructions:
+              `Send ${MIN_PAYMENT} USDC on Solana to ${walletAddress} with memo "${newKey}". ` +
+              "Then include the header X-Agent-Key: " +
+              newKey +
+              " on all subsequent requests.",
+          },
+        },
+        402,
       );
     }
 
-    const allowedKeysRaw = Deno.env.get("ALLOWED_KEYS") || "";
-    const allowedKeys = allowedKeysRaw
-      .split(",")
-      .map((k) => k.trim())
-      .filter(Boolean);
+    // Has key → validate signature
+    if (!(await isValidAgentKey(agentKey, secret))) {
+      return jsonResponse(
+        {
+          error: "forbidden",
+          message: "Invalid API key. Keys must be issued by this server.",
+          details: "GET /.well-known/agent-access.json for access instructions.",
+        },
+        403,
+      );
+    }
 
-    if (!allowedKeys.includes(agentKey)) {
-      return denyResponse("Invalid API key.");
+    // In debug mode, accept any valid self-signed key without payment check
+    if (debug) {
+      const ua = request.headers.get("user-agent") || "unknown";
+      console.log(
+        `[gate] DEBUG mode — agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
+      );
+      return context.next();
+    }
+
+    // Production mode — verify payment on-chain
+    if (!walletAddress) {
+      console.error("[gate] HOME_WALLET_ADDRESS not set, cannot verify payments");
+      return jsonResponse(
+        { error: "server_error", message: "Payment verification unavailable." },
+        500,
+      );
+    }
+
+    const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl);
+
+    if (!paid) {
+      return jsonResponse(
+        {
+          error: "payment_required",
+          message:
+            "Key is valid but payment has not been verified on-chain yet. " +
+            "Please send the USDC payment and allow a few moments for confirmation.",
+          your_key: agentKey,
+          payment: {
+            chain: "solana",
+            token: "USDC",
+            amount: String(MIN_PAYMENT),
+            wallet_address: walletAddress,
+            memo: agentKey,
+          },
+        },
+        402,
+      );
     }
 
     const ua = request.headers.get("user-agent") || "unknown";
     console.log(
-      `[gate] Authenticated agent: key=${agentKey.slice(0, 8)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
+      `[gate] Payment verified — agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
     );
     return context.next();
   }
 
-  // Browser with valid challenge cookie → pass through
+  // ── Browser flow ───────────────────────────────────────────────
   if (await isValidCookie(request, secret)) {
     return context.next();
   }
 
-  // Browser without cookie → serve JS challenge page
   const nonceTs = Date.now().toString();
   const nonceSig = await hmacSign(`nonce:${nonceTs}`, secret);
-  const nonce = `${nonceTs}.${nonceSig}`;
-
-  return challengePage(url.pathname + url.search, nonce);
+  return challengePage(url.pathname + url.search, `${nonceTs}.${nonceSig}`);
 }
