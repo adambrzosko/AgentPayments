@@ -15,60 +15,107 @@
         .hero { background: #f4f4f8; border-radius: 8px; padding: 2rem; margin-bottom: 2rem; }
         .section { margin-bottom: 2rem; }
         footer { text-align: center; padding: 1.5rem; color: #888; font-size: 0.85rem; border-top: 1px solid #eee; margin-top: 3rem; }
+
+        /* Gate: hide content by default */
+        .gated-content { display: none; }
+
+        /* Payment wall */
+        .payment-wall {
+            display: none;
+            max-width: 600px;
+            margin: 4rem auto;
+            padding: 2.5rem;
+            text-align: center;
+            background: #1a1a2e;
+            color: #fff;
+            border-radius: 12px;
+        }
+        .payment-wall h2 { color: #ff6b6b; margin-bottom: 1rem; font-size: 1.75rem; }
+        .payment-wall p { color: #ccc; margin-bottom: 1.25rem; }
+        .payment-wall code {
+            display: inline-block;
+            background: #2d2d4e;
+            color: #7bed9f;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
-    <header>
-        <h1>AgentPayments</h1>
-    </header>
+    <!-- Payment wall: shown when access_token is missing or invalid -->
+    <div id="payment-wall" class="payment-wall">
+        <h2>Access Denied &mdash; Payment Required</h2>
+        <p>This resource requires a valid access token. Provide the correct token as a query parameter to proceed.</p>
+        <p><code>?access_token=&lt;your_token&gt;</code></p>
+    </div>
 
-    <main>
-        <div class="hero">
-            <h2>Welcome to AgentPayments</h2>
-            <p>
-                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
-                incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-                exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-            </p>
-        </div>
+    <!-- Gated content: only shown with valid access_token -->
+    <div id="gated-content" class="gated-content">
+        <header>
+            <h1>AgentPayments</h1>
+        </header>
 
-        <div class="section">
-            <h2>About</h2>
-            <p>
-                Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
-                fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
-                culpa qui officia deserunt mollit anim id est laborum. Curabitur pretium tincidunt
-                lacus. Nulla gravida orci a odio.
-            </p>
-            <p>
-                Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus
-                magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis
-                ac tellus et risus vulputate vehicula. Donec lobortis risus a elit.
-            </p>
-        </div>
+        <main>
+            <div class="hero">
+                <h2>Welcome to AgentPayments</h2>
+                <p>
+                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+                    incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
+                    exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+                </p>
+            </div>
 
-        <div class="section">
-            <h2>Services</h2>
-            <p>
-                Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac
-                turpis egestas. Vestibulum tortor quam, feugiat vitae, ultricies eget, tempor sit
-                amet, ante. Donec eu libero sit amet quam egestas semper. Aenean ultricies mi
-                vitae est. Mauris placerat eleifend leo.
-            </p>
-        </div>
+            <div class="section">
+                <h2>About</h2>
+                <p>
+                    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
+                    fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
+                    culpa qui officia deserunt mollit anim id est laborum. Curabitur pretium tincidunt
+                    lacus. Nulla gravida orci a odio.
+                </p>
+                <p>
+                    Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus
+                    magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis
+                    ac tellus et risus vulputate vehicula. Donec lobortis risus a elit.
+                </p>
+            </div>
 
-        <div class="section">
-            <h2>Contact</h2>
-            <p>
-                Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu
-                vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis,
-                accumsan porttitor, facilisis luctus, metus.
-            </p>
-        </div>
-    </main>
+            <div class="section">
+                <h2>Services</h2>
+                <p>
+                    Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac
+                    turpis egestas. Vestibulum tortor quam, feugiat vitae, ultricies eget, tempor sit
+                    amet, ante. Donec eu libero sit amet quam egestas semper. Aenean ultricies mi
+                    vitae est. Mauris placerat eleifend leo.
+                </p>
+            </div>
 
-    <footer>
-        AgentPayments &copy; 2026
-    </footer>
+            <div class="section">
+                <h2>Contact</h2>
+                <p>
+                    Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu
+                    vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis,
+                    accumsan porttitor, facilisis luctus, metus.
+                </p>
+            </div>
+        </main>
+
+        <footer>
+            AgentPayments &copy; 2026
+        </footer>
+    </div>
+
+    <script>
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('access_token') === 'pay2access') {
+                document.getElementById('gated-content').style.display = 'block';
+            } else {
+                document.getElementById('payment-wall').style.display = 'block';
+            }
+        })();
+    </script>
 </body>
 </html>
