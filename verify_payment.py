@@ -14,10 +14,15 @@ import os
 import json
 import requests
 
-SOLANA_RPC = os.environ.get(
-    "SOLANA_RPC_URL", "https://api.devnet.solana.com"
-)
-USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"  # devnet USDC
+DEBUG = os.environ.get("DEBUG", "true").lower() != "false"
+
+USDC_MINT_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+USDC_MINT_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+RPC_DEVNET = "https://api.devnet.solana.com"
+RPC_MAINNET = "https://api.mainnet-beta.solana.com"
+
+SOLANA_RPC = os.environ.get("SOLANA_RPC_URL", RPC_DEVNET if DEBUG else RPC_MAINNET)
+USDC_MINT = USDC_MINT_DEVNET if DEBUG else USDC_MINT_MAINNET
 MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 MIN_PAYMENT = 0.01
 

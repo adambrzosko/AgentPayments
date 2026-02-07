@@ -3,7 +3,10 @@ import type { Context } from "https://edge.netlify.com";
 const COOKIE_NAME = "__agp_verified";
 const COOKIE_MAX_AGE = 86400; // 24 hours
 const KEY_PREFIX = "ag_";
-const USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"; // devnet USDC
+const USDC_MINT_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const USDC_MINT_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const RPC_DEVNET = "https://api.devnet.solana.com";
+const RPC_MAINNET = "https://api.mainnet-beta.solana.com";
 const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 const MIN_PAYMENT = 0.01;
 
@@ -55,6 +58,7 @@ async function verifyPaymentOnChain(
   agentKey: string,
   walletAddress: string,
   rpcUrl: string,
+  usdcMint: string,
 ): Promise<boolean> {
   try {
     // Get recent transaction signatures for the wallet
@@ -127,7 +131,7 @@ async function verifyPaymentOnChain(
             const info = parsed.info || {};
 
             // Check mint for transferChecked
-            if (parsed.type === "transferChecked" && info.mint !== USDC_MINT) {
+            if (parsed.type === "transferChecked" && info.mint !== usdcMint) {
               continue;
             }
 
@@ -261,7 +265,8 @@ export default async function gate(request: Request, context: Context) {
   const walletAddress = Deno.env.get("HOME_WALLET_ADDRESS") || "";
   const debug = Deno.env.get("DEBUG") !== "false"; // true unless explicitly "false"
   const rpcUrl =
-    Deno.env.get("SOLANA_RPC_URL") || "https://api.devnet.solana.com";
+    Deno.env.get("SOLANA_RPC_URL") || (debug ? RPC_DEVNET : RPC_MAINNET);
+  const usdcMint = debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET;
 
   // Always allow public endpoints
   if (isPublicPath(url.pathname)) {
@@ -332,12 +337,13 @@ export default async function gate(request: Request, context: Context) {
           your_key: newKey,
           payment: {
             chain: "solana",
+            network: debug ? "devnet" : "mainnet-beta",
             token: "USDC",
             amount: String(MIN_PAYMENT),
             wallet_address: walletAddress,
             memo: newKey,
             instructions:
-              `Send ${MIN_PAYMENT} USDC on Solana to ${walletAddress} with memo "${newKey}". ` +
+              `Send ${MIN_PAYMENT} USDC on Solana ${debug ? "devnet" : "mainnet"} to ${walletAddress} with memo "${newKey}". ` +
               "Then include the header X-Agent-Key: " +
               newKey +
               " on all subsequent requests.",
@@ -359,16 +365,7 @@ export default async function gate(request: Request, context: Context) {
       );
     }
 
-    // In debug mode, accept any valid self-signed key without payment check
-    if (debug) {
-      const ua = request.headers.get("user-agent") || "unknown";
-      console.log(
-        `[gate] DEBUG mode — agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
-      );
-      return context.next();
-    }
-
-    // Production mode — verify payment on-chain
+    // Verify payment on-chain (devnet when DEBUG=true, mainnet when DEBUG=false)
     if (!walletAddress) {
       console.error("[gate] HOME_WALLET_ADDRESS not set, cannot verify payments");
       return jsonResponse(
@@ -377,7 +374,7 @@ export default async function gate(request: Request, context: Context) {
       );
     }
 
-    const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl);
+    const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint);
 
     if (!paid) {
       return jsonResponse(
@@ -389,6 +386,7 @@ export default async function gate(request: Request, context: Context) {
           your_key: agentKey,
           payment: {
             chain: "solana",
+            network: debug ? "devnet" : "mainnet-beta",
             token: "USDC",
             amount: String(MIN_PAYMENT),
             wallet_address: walletAddress,
@@ -400,8 +398,9 @@ export default async function gate(request: Request, context: Context) {
     }
 
     const ua = request.headers.get("user-agent") || "unknown";
+    const net = debug ? "devnet" : "mainnet";
     console.log(
-      `[gate] Payment verified — agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
+      `[gate] Payment verified (${net}) — agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${context.ip} path=${url.pathname}`,
     );
     return context.next();
   }
