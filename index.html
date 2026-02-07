@@ -3,119 +3,99 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AgentPayments</title>
+    <title>Acme Co.</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #333; line-height: 1.6; }
-        header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; }
-        header h1 { font-size: 1.5rem; }
-        main { max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; }
-        h2 { margin-bottom: 0.75rem; color: #1a1a2e; }
-        p { margin-bottom: 1rem; }
-        .hero { background: #f4f4f8; border-radius: 8px; padding: 2rem; margin-bottom: 2rem; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #333; line-height: 1.7; }
+        header { background: #1a1a2e; color: #fff; padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+        header h1 { font-size: 1.4rem; font-weight: 600; }
+        nav a { color: #ccc; text-decoration: none; margin-left: 1.5rem; font-size: 0.95rem; }
+        nav a:hover { color: #fff; }
+        main { max-width: 880px; margin: 2.5rem auto; padding: 0 1.5rem; }
+        .hero { background: linear-gradient(135deg, #f4f4f8, #e8e8f0); border-radius: 10px; padding: 3rem 2.5rem; margin-bottom: 2.5rem; }
+        .hero h2 { font-size: 1.75rem; margin-bottom: 0.75rem; color: #1a1a2e; }
+        .hero p { font-size: 1.05rem; color: #555; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; }
+        .card { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 1.5rem; }
+        .card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; color: #1a1a2e; }
+        .card p { font-size: 0.95rem; color: #666; }
         .section { margin-bottom: 2rem; }
-        footer { text-align: center; padding: 1.5rem; color: #888; font-size: 0.85rem; border-top: 1px solid #eee; margin-top: 3rem; }
-
-        /* Gate: hide content by default */
-        .gated-content { display: none; }
-
-        /* Payment wall */
-        .payment-wall {
-            display: none;
-            max-width: 600px;
-            margin: 4rem auto;
-            padding: 2.5rem;
-            text-align: center;
-            background: #1a1a2e;
-            color: #fff;
-            border-radius: 12px;
-        }
-        .payment-wall h2 { color: #ff6b6b; margin-bottom: 1rem; font-size: 1.75rem; }
-        .payment-wall p { color: #ccc; margin-bottom: 1.25rem; }
-        .payment-wall code {
-            display: inline-block;
-            background: #2d2d4e;
-            color: #7bed9f;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            word-break: break-all;
-        }
+        .section h2 { margin-bottom: 0.75rem; color: #1a1a2e; }
+        .section p { margin-bottom: 1rem; color: #555; }
+        footer { text-align: center; padding: 1.5rem; color: #999; font-size: 0.85rem; border-top: 1px solid #eee; margin-top: 3rem; }
     </style>
 </head>
 <body>
-    <!-- Payment wall: shown when access_token is missing or invalid -->
-    <div id="payment-wall" class="payment-wall">
-        <h2>Access Denied &mdash; Payment Required</h2>
-        <p>This resource requires a valid access token. Provide the correct token as a query parameter to proceed.</p>
-        <p><code>?access_token=&lt;your_token&gt;</code></p>
-    </div>
+    <header>
+        <h1>Acme Co.</h1>
+        <nav>
+            <a href="#">Home</a>
+            <a href="#">About</a>
+            <a href="#">Services</a>
+            <a href="#">Contact</a>
+        </nav>
+    </header>
 
-    <!-- Gated content: only shown with valid access_token -->
-    <div id="gated-content" class="gated-content">
-        <header>
-            <h1>AgentPayments</h1>
-        </header>
+    <main>
+        <div class="hero">
+            <h2>Building the future, one step at a time</h2>
+            <p>
+                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+                incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
+                exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+            </p>
+        </div>
 
-        <main>
-            <div class="hero">
-                <h2>Welcome to AgentPayments</h2>
-                <p>
-                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
-                    incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-                    exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-                </p>
-            </div>
-
-            <div class="section">
-                <h2>About</h2>
+        <div class="grid">
+            <div class="card">
+                <h3>Consulting</h3>
                 <p>
                     Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
-                    fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
-                    culpa qui officia deserunt mollit anim id est laborum. Curabitur pretium tincidunt
-                    lacus. Nulla gravida orci a odio.
-                </p>
-                <p>
-                    Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus
-                    magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis
-                    ac tellus et risus vulputate vehicula. Donec lobortis risus a elit.
+                    fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident.
                 </p>
             </div>
-
-            <div class="section">
-                <h2>Services</h2>
+            <div class="card">
+                <h3>Engineering</h3>
+                <p>
+                    Curabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius,
+                    turpis et commodo pharetra, est eros bibendum elit.
+                </p>
+            </div>
+            <div class="card">
+                <h3>Design</h3>
                 <p>
                     Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac
-                    turpis egestas. Vestibulum tortor quam, feugiat vitae, ultricies eget, tempor sit
-                    amet, ante. Donec eu libero sit amet quam egestas semper. Aenean ultricies mi
-                    vitae est. Mauris placerat eleifend leo.
+                    turpis egestas. Vestibulum tortor quam, feugiat vitae.
                 </p>
             </div>
+        </div>
 
-            <div class="section">
-                <h2>Contact</h2>
-                <p>
-                    Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu
-                    vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis,
-                    accumsan porttitor, facilisis luctus, metus.
-                </p>
-            </div>
-        </main>
+        <div class="section">
+            <h2>About Us</h2>
+            <p>
+                Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus
+                magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis
+                ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor.
+            </p>
+            <p>
+                Ut ullamcorper, ligula ut dictum pharetra, nisi nunc fringilla magna, in commodo
+                elit erat nec turpis. Ut pharetra auctor eros. Praesent dapibus, neque id cursus
+                faucibus, tortor neque egestas augue, eu vulputate magna eros eu erat.
+            </p>
+        </div>
 
-        <footer>
-            AgentPayments &copy; 2026
-        </footer>
-    </div>
+        <div class="section">
+            <h2>Get in Touch</h2>
+            <p>
+                Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu
+                vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis,
+                accumsan porttitor, facilisis luctus, metus.
+            </p>
+        </div>
+    </main>
 
-    <script>
-        (function () {
-            var params = new URLSearchParams(window.location.search);
-            if (params.get('access_token') === 'pay2access') {
-                document.getElementById('gated-content').style.display = 'block';
-            } else {
-                document.getElementById('payment-wall').style.display = 'block';
-            }
-        })();
-    </script>
+    <footer>
+        Acme Co. &copy; 2026
+    </footer>
 </body>
 </html>
