@@ -61,21 +61,53 @@ async function verifyPaymentOnChain(
   usdcMint: string,
 ): Promise<boolean> {
   try {
-    // Get recent transaction signatures for the wallet
-    const sigsResp = await fetch(rpcUrl, {
+    // Find token accounts for this wallet (SPL transfers go to ATAs, not the main wallet)
+    const ataResp = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
-        method: "getSignaturesForAddress",
-        params: [walletAddress, { limit: 50 }],
+        method: "getTokenAccountsByOwner",
+        params: [
+          walletAddress,
+          { mint: usdcMint },
+          { encoding: "jsonParsed" },
+        ],
       }),
     });
-    const sigsData = await sigsResp.json();
-    const signatures = sigsData.result || [];
+    const ataData = await ataResp.json();
+    const tokenAccounts = (ataData.result?.value || []).map(
+      (a: { pubkey: string }) => a.pubkey,
+    );
 
-    for (const sigInfo of signatures) {
+    const addressesToScan = [walletAddress, ...tokenAccounts];
+
+    // Collect unique signatures across all addresses
+    const seen = new Set<string>();
+    const allSignatures: { signature: string; err: unknown }[] = [];
+
+    for (const addr of addressesToScan) {
+      const sigsResp = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getSignaturesForAddress",
+          params: [addr, { limit: 50 }],
+        }),
+      });
+      const sigsData = await sigsResp.json();
+      for (const sig of sigsData.result || []) {
+        if (!seen.has(sig.signature)) {
+          seen.add(sig.signature);
+          allSignatures.push(sig);
+        }
+      }
+    }
+
+    for (const sigInfo of allSignatures) {
       if (sigInfo.err) continue;
 
       const txResp = await fetch(rpcUrl, {

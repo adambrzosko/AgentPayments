@@ -86,54 +86,52 @@ def main():
     print(f"  Amount: {TRANSFER_AMOUNT / 10**DECIMALS} tokens")
     print()
 
-    # 1. Create temp wallet
-    payer = Keypair()
-    print(f"1. Created temp wallet: {payer.pubkey()}")
+    # 1. Load or create payer wallet (persisted so you can manually fund it)
+    keyfile = os.path.join(os.path.dirname(__file__) or ".", ".test-keypair.json")
+    if os.path.exists(keyfile):
+        import json as _json
+        with open(keyfile) as f:
+            secret = bytes(_json.load(f))
+        payer = Keypair.from_bytes(secret)
+        print(f"1. Loaded existing wallet: {payer.pubkey()}")
+    else:
+        payer = Keypair()
+        import json as _json
+        with open(keyfile, "w") as f:
+            _json.dump(list(bytes(payer)), f)
+        print(f"1. Created new wallet (saved to {keyfile}): {payer.pubkey()}")
 
-    # 2. Airdrop SOL for fees
-    print("2. Requesting SOL airdrop...")
-    airdrop_sig = None
-
-    # Try RPC airdrop first, then web faucet
-    for attempt in range(3):
-        try:
-            resp = client.request_airdrop(payer.pubkey(), 1_000_000_000)
-            airdrop_sig = resp.value
-            print(f"   RPC airdrop submitted: {airdrop_sig}")
-            break
-        except Exception as e:
-            print(f"   RPC airdrop attempt {attempt + 1} failed: {e}")
-            time.sleep(3)
-
-    if airdrop_sig is None:
-        # Try the web faucet as fallback
-        import requests as req
-        print("   Trying web faucet (faucet.solana.com)...")
-        try:
-            faucet_resp = req.post(
-                "https://faucet.solana.com/",
-                json={"walletAddress": str(payer.pubkey()), "network": "devnet"},
-                timeout=30,
-            )
-            if faucet_resp.ok:
-                print(f"   Web faucet response: {faucet_resp.text[:100]}")
-            else:
-                print(f"   Web faucet returned {faucet_resp.status_code}")
-        except Exception as e:
-            print(f"   Web faucet failed: {e}")
-
-    if airdrop_sig is None:
-        print()
-        print("   ERROR: Could not airdrop SOL. The devnet faucet is rate-limited.")
-        print("   You can manually airdrop from https://faucet.solana.com")
-        print(f"   Wallet to fund: {payer.pubkey()}")
-        print("   Or try again in a few minutes.")
-        sys.exit(1)
-
-    wait_for_confirmation(client, airdrop_sig, "airdrop")
-
+    # 2. Ensure wallet has SOL for fees
     balance = client.get_balance(payer.pubkey()).value
-    print(f"   Balance: {balance / 1e9} SOL")
+    print(f"2. Current balance: {balance / 1e9} SOL")
+
+    if balance >= 100_000_000:  # 0.1 SOL is plenty for fees
+        print("   Balance sufficient, skipping airdrop.")
+    else:
+        print("   Requesting SOL airdrop...")
+        airdrop_sig = None
+
+        for attempt in range(3):
+            try:
+                resp = client.request_airdrop(payer.pubkey(), 1_000_000_000)
+                airdrop_sig = resp.value
+                print(f"   RPC airdrop submitted: {airdrop_sig}")
+                break
+            except Exception as e:
+                print(f"   RPC airdrop attempt {attempt + 1} failed: {e}")
+                time.sleep(3)
+
+        if airdrop_sig is None:
+            print()
+            print("   ERROR: Could not airdrop SOL. The devnet faucet is rate-limited.")
+            print("   Please manually fund this wallet from https://faucet.solana.com:")
+            print(f"   >>> {payer.pubkey()} <<<")
+            print("   Then re-run this script.")
+            sys.exit(1)
+
+        wait_for_confirmation(client, airdrop_sig, "airdrop")
+        balance = client.get_balance(payer.pubkey()).value
+        print(f"   Balance: {balance / 1e9} SOL")
 
     # 3. Create test SPL token (simulating USDC)
     print("3. Creating test SPL token...")
@@ -156,7 +154,12 @@ def main():
 
     # 5. Mint tokens to sender
     print(f"5. Minting {MINT_AMOUNT / 10**DECIMALS} tokens to sender...")
-    token.mint_to(sender_ata, payer, MINT_AMOUNT)
+    mint_resp = token.mint_to(sender_ata, payer, MINT_AMOUNT)
+    wait_for_confirmation(client, mint_resp.value, "mint")
+
+    # Verify balance before transfer
+    token_balance = client.get_token_account_balance(sender_ata)
+    print(f"   Token balance: {token_balance.value.ui_amount}")
 
     # 6. Transfer with memo
     print(f"6. Sending {TRANSFER_AMOUNT / 10**DECIMALS} tokens with memo...")
@@ -180,11 +183,6 @@ def main():
     blockhash_resp = client.get_latest_blockhash()
     recent_blockhash = blockhash_resp.value.blockhash
 
-    msg = Message.new_with_blockhash(
-        [transfer_ix, memo_ix],
-        payer.pubkey(),
-        recent_blockhash,
-    )
     tx = Transaction.new_signed_with_payer(
         [transfer_ix, memo_ix],
         payer.pubkey(),

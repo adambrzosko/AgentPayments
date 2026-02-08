@@ -50,17 +50,44 @@ def get_transaction(signature: str) -> dict | None:
     return data.get("result")
 
 
+def get_token_accounts(wallet_address: str) -> list[str]:
+    """Get all SPL token account addresses owned by this wallet."""
+    data = rpc_call("getTokenAccountsByOwner", [
+        wallet_address,
+        {"mint": USDC_MINT},
+        {"encoding": "jsonParsed"},
+    ])
+    accounts = data.get("result", {}).get("value", [])
+    return [a["pubkey"] for a in accounts]
+
+
 def verify_payment(wallet_address: str, agent_key: str) -> tuple[bool, str | None]:
     """
-    Scan recent transactions to wallet_address for a USDC payment
-    with agent_key as the memo.
+    Scan recent transactions to wallet_address (and its token accounts)
+    for a USDC payment with agent_key as the memo.
 
     Returns (verified, transaction_signature).
     """
-    sigs = get_recent_signatures(wallet_address)
-    print(f"Scanning {len(sigs)} recent transactions...")
+    # Scan both the main wallet and its associated token accounts
+    addresses_to_scan = [wallet_address]
+    try:
+        token_accounts = get_token_accounts(wallet_address)
+        addresses_to_scan.extend(token_accounts)
+    except Exception:
+        pass
 
-    for sig_info in sigs:
+    # Collect unique signatures across all addresses
+    seen = set()
+    all_sigs = []
+    for addr in addresses_to_scan:
+        for sig_info in get_recent_signatures(addr):
+            if sig_info["signature"] not in seen:
+                seen.add(sig_info["signature"])
+                all_sigs.append(sig_info)
+
+    print(f"Scanning {len(all_sigs)} recent transactions across {len(addresses_to_scan)} addresses...")
+
+    for sig_info in all_sigs:
         if sig_info.get("err"):
             continue
 
