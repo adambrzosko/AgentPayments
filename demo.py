@@ -2,12 +2,12 @@
 """
 Visual demo of the AgentPayments access gating flow.
 
-Shows a browser getting DENIED, a Solana payment going through,
+Shows a browser getting DENIED, a real Solana devnet payment going through,
 then the browser gaining access — all in a dramatic visual sequence.
 
 Prerequisites:
-    pip install playwright
-    playwright install chromium
+    pip install playwright solana spl
+    playwright install firefox
 
 Usage:
     python demo.py
@@ -18,10 +18,25 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 from playwright.async_api import async_playwright
 
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.instruction import Instruction
+from solders.transaction import Transaction
+from solana.rpc.api import Client
+from spl.token.client import Token
+from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import transfer_checked, TransferCheckedParams
+
 SITE_URL = "https://grand-dasik-b98262.netlify.app"
+DEVNET_URL = "https://api.devnet.solana.com"
+MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+DECIMALS = 6
+TRANSFER_AMOUNT = 10_000   # 0.01 with 6 decimals
+MINT_AMOUNT = 1_000_000    # 1.0 with 6 decimals
 
 # ─── Phase 1: DENIED ─────────────────────────────────────────────
 
@@ -207,6 +222,7 @@ PAYMENT_PAGE = """
     font-size: 0.75rem;
     color: #555;
     margin-top: 0.25rem;
+    word-break: break-all;
   }
 
   .tx-box {
@@ -237,32 +253,48 @@ PAYMENT_PAGE = """
     <div class="step" id="s1">
       <div class="step-icon" id="i1"></div>
       <div>
-        <div class="step-text">Generating agent key</div>
-        <div class="detail">{key}</div>
+        <div class="step-text">Agent key from 402 response</div>
+        <div class="detail" id="d1"></div>
       </div>
     </div>
 
     <div class="step" id="s2">
       <div class="step-icon" id="i2"></div>
       <div>
-        <div class="step-text">Connecting to Solana devnet</div>
-        <div class="detail">https://api.devnet.solana.com</div>
+        <div class="step-text">Loading wallet &amp; connecting to devnet</div>
+        <div class="detail" id="d2"></div>
       </div>
     </div>
 
     <div class="step" id="s3">
       <div class="step-icon" id="i3"></div>
       <div>
-        <div class="step-text">Sending 0.01 USDC to wallet</div>
-        <div class="detail">{wallet}</div>
+        <div class="step-text">Creating SPL token mint &amp; accounts</div>
+        <div class="detail" id="d3"></div>
       </div>
     </div>
 
     <div class="step" id="s4">
       <div class="step-icon" id="i4"></div>
       <div>
-        <div class="step-text">Transaction confirmed on-chain</div>
-        <div class="detail">Memo: {key}</div>
+        <div class="step-text">Sending transfer + memo transaction</div>
+        <div class="detail" id="d4"></div>
+      </div>
+    </div>
+
+    <div class="step" id="s5">
+      <div class="step-icon" id="i5"></div>
+      <div>
+        <div class="step-text">Waiting for on-chain confirmation</div>
+        <div class="detail" id="d5"></div>
+      </div>
+    </div>
+
+    <div class="step" id="s6">
+      <div class="step-icon" id="i6"></div>
+      <div>
+        <div class="step-text">Payment confirmed!</div>
+        <div class="detail" id="d6"></div>
       </div>
     </div>
 
@@ -274,36 +306,22 @@ PAYMENT_PAGE = """
   </div>
 
   <script>
-    const steps = [
-      {{ id: 's1', delay: 500 }},
-      {{ id: 's2', delay: 1500 }},
-      {{ id: 's3', delay: 3000 }},
-      {{ id: 's4', delay: 0 }},  // triggered by page code
-    ];
-
-    function showStep(id, done) {{
+    function showStep(id, done) {
       const step = document.getElementById(id);
       const icon = document.getElementById(id.replace('s', 'i'));
       step.classList.add('visible');
-      if (done) {{
+      if (done) {
         step.classList.add('done');
         icon.classList.remove('active');
         icon.classList.add('done');
-        icon.textContent = '✓';
-      }} else {{
+        icon.textContent = '\u2713';
+      } else {
         icon.classList.add('active');
-      }}
-    }}
-
-    async function animate() {{
-      for (const s of steps.slice(0, 3)) {{
-        await new Promise(r => setTimeout(r, s.delay));
-        showStep(s.id, false);
-        await new Promise(r => setTimeout(r, 800));
-        showStep(s.id, true);
-      }}
-    }}
-    animate();
+      }
+    }
+    function setDetail(id, text) {
+      document.getElementById(id).textContent = text;
+    }
   </script>
 </body>
 </html>
@@ -369,6 +387,157 @@ def load_env(path=".env"):
     return env
 
 
+def load_keypair():
+    """Load the test keypair from .test-keypair.json."""
+    keyfile = os.path.join(os.path.dirname(__file__) or ".", ".test-keypair.json")
+    with open(keyfile) as f:
+        secret = bytes(json.load(f))
+    return Keypair.from_bytes(secret)
+
+
+def wait_for_confirmation(client, signature, max_wait=120):
+    """Poll until a transaction is confirmed. Returns the status string or None."""
+    for _ in range(max_wait):
+        try:
+            resp = client.get_signature_statuses([signature])
+            statuses = resp.value
+            if statuses and statuses[0] and statuses[0].confirmation_status:
+                status = str(statuses[0].confirmation_status)
+                if status in ("confirmed", "finalized"):
+                    return status
+        except Exception:
+            pass  # transient RPC errors — retry
+        time.sleep(2)
+    return None
+
+
+async def step_ui(page, step_num, done, detail=None):
+    """Update a step in the payment page UI."""
+    sid = f"s{step_num}"
+    if detail:
+        escaped = detail.replace("\\", "\\\\").replace("'", "\\'")
+        await page.evaluate(f"setDetail('d{step_num}', '{escaped}')")
+    await page.evaluate(f"showStep('{sid}', {'true' if done else 'false'})")
+
+
+async def run_payment(page, agent_key, receiver_addr):
+    """Execute real Solana devnet payment, updating browser UI at each step."""
+
+    # Step 1: Show agent key
+    await step_ui(page, 1, False, agent_key)
+    await asyncio.sleep(0.5)
+    await step_ui(page, 1, True)
+    await asyncio.sleep(0.3)
+
+    # Step 2: Load wallet, connect to devnet, check balance
+    await step_ui(page, 2, False, "Connecting...")
+
+    def do_step2():
+        payer = load_keypair()
+        client = Client(DEVNET_URL, timeout=30)
+        balance = client.get_balance(payer.pubkey()).value
+        return payer, client, balance
+
+    payer, client, balance = await asyncio.to_thread(do_step2)
+    sol_balance = balance / 1e9
+    await step_ui(page, 2, True, f"{payer.pubkey()} — {sol_balance:.2f} SOL")
+    print(f"  Payer: {payer.pubkey()} ({sol_balance:.2f} SOL)")
+    await asyncio.sleep(0.3)
+
+    # Step 3: Create mint + ATAs + mint tokens
+    await step_ui(page, 3, False, "Creating token mint...")
+
+    receiver = Pubkey.from_string(receiver_addr)
+
+    def do_step3():
+        token = Token.create_mint(
+            conn=client,
+            payer=payer,
+            mint_authority=payer.pubkey(),
+            decimals=DECIMALS,
+            program_id=TOKEN_PROGRAM_ID,
+        )
+        sender_ata = token.create_associated_token_account(payer.pubkey())
+        receiver_ata = token.create_associated_token_account(receiver)
+        mint_resp = token.mint_to(sender_ata, payer, MINT_AMOUNT)
+        # Wait for mint confirmation
+        wait_for_confirmation(client, mint_resp.value)
+        return token, sender_ata, receiver_ata
+
+    token, sender_ata, receiver_ata = await asyncio.to_thread(do_step3)
+    mint_addr = str(token.pubkey)
+    await step_ui(page, 3, True, f"Mint: {mint_addr}")
+    print(f"  Mint: {mint_addr}")
+    await asyncio.sleep(0.3)
+
+    # Step 4: Build and send transfer + memo transaction
+    await step_ui(page, 4, False, "Building transaction...")
+
+    def do_step4():
+        transfer_ix = transfer_checked(TransferCheckedParams(
+            program_id=TOKEN_PROGRAM_ID,
+            source=sender_ata,
+            mint=token.pubkey,
+            dest=receiver_ata,
+            owner=payer.pubkey(),
+            amount=TRANSFER_AMOUNT,
+            decimals=DECIMALS,
+        ))
+        memo_ix = Instruction(
+            program_id=MEMO_PROGRAM_ID,
+            accounts=[],
+            data=agent_key.encode("utf-8"),
+        )
+        blockhash_resp = client.get_latest_blockhash()
+        recent_blockhash = blockhash_resp.value.blockhash
+        tx = Transaction.new_signed_with_payer(
+            [transfer_ix, memo_ix],
+            payer.pubkey(),
+            [payer],
+            recent_blockhash,
+        )
+        result = client.send_transaction(tx)
+        return result.value
+
+    tx_sig = await asyncio.to_thread(do_step4)
+    tx_sig_str = str(tx_sig)
+    await step_ui(page, 4, True, f"Tx: {tx_sig_str}")
+    print(f"  Tx: {tx_sig_str}")
+    await asyncio.sleep(0.3)
+
+    # Step 5: Wait for confirmation
+    await step_ui(page, 5, False, "Polling status...")
+
+    def do_step5():
+        return wait_for_confirmation(client, tx_sig)
+
+    status = await asyncio.to_thread(do_step5)
+    if status:
+        await step_ui(page, 5, True, f"Status: {status}")
+        print(f"  Confirmation: {status}")
+    else:
+        await step_ui(page, 5, True, "Timeout — check explorer")
+        print("  Confirmation: timeout")
+    await asyncio.sleep(0.3)
+
+    # Step 6: Done — show explorer link
+    explorer_url = f"https://explorer.solana.com/tx/{tx_sig_str}?cluster=devnet"
+    await step_ui(page, 6, False, "Generating explorer link...")
+    await asyncio.sleep(0.3)
+    await step_ui(page, 6, True, explorer_url)
+
+    # Show the tx box
+    await page.evaluate(f"""
+        const txbox = document.getElementById('txbox');
+        txbox.classList.add('visible');
+        document.getElementById('txhash').textContent = '{tx_sig_str}';
+        const link = document.getElementById('txlink');
+        link.href = '{explorer_url}';
+    """)
+
+    return tx_sig_str, explorer_url, mint_addr
+
+
 async def main():
     site_url = sys.argv[1] if len(sys.argv) > 1 else SITE_URL
     env = load_env()
@@ -427,52 +596,30 @@ async def main():
         await page.set_content(denied_html)
         await asyncio.sleep(5)
 
-        # ── PHASE 2: Payment processing ─────────────────────────
-        print("[Phase 2] Processing payment on Solana...")
+        # ── PHASE 2: Real payment processing ──────────────────
+        print("[Phase 2] Processing REAL payment on Solana devnet...")
 
-        payment_html = PAYMENT_PAGE.replace("{key}", agent_key).replace(
-            "{wallet}", wallet
-        )
-        await page.set_content(payment_html)
+        await page.set_content(PAYMENT_PAGE)
+        await asyncio.sleep(0.5)
 
-        # Wait for the animated steps to play (steps 1-3 take ~5s)
-        await asyncio.sleep(6)
-
-        # Show step 4 (confirmed) and the transaction box
-        # Use a fake but realistic-looking tx signature for the demo
-        demo_tx = "4xK9" + "".join(
-            f"{b:x}" for b in os.urandom(32)
-        )[:80]
-        explorer_url = (
-            f"https://explorer.solana.com/tx/{demo_tx}?cluster=devnet"
+        tx_sig_str, explorer_url, mint_addr = await run_payment(
+            page, agent_key, wallet
         )
 
-        await page.evaluate(f"""
-            const s4 = document.getElementById('s4');
-            const i4 = document.getElementById('i4');
-            s4.classList.add('visible');
-            i4.classList.add('active');
-            setTimeout(() => {{
-                s4.classList.add('done');
-                i4.classList.remove('active');
-                i4.classList.add('done');
-                i4.textContent = '✓';
+        print(f"  Explorer: {explorer_url}")
+        await asyncio.sleep(3)
 
-                const txbox = document.getElementById('txbox');
-                txbox.classList.add('visible');
-                document.getElementById('txhash').textContent = '{demo_tx}';
-                const link = document.getElementById('txlink');
-                link.href = '{explorer_url}';
-            }}, 1000);
-        """)
-
-        await asyncio.sleep(4)
+        # Navigate to Solana Explorer to show the real transaction
+        print("  Opening Solana Explorer...")
+        await page.unroute("**/*")
+        try:
+            await page.goto(explorer_url, wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass  # Explorer SPA may be slow; page is still usable
+        await asyncio.sleep(5)
 
         # ── PHASE 3: Access granted ─────────────────────────────
         print("[Phase 3] Retrying with key → ACCESS GRANTED")
-
-        # Remove agent route, add route that passes X-Agent-Key but keeps browser headers
-        await page.unroute("**/*")
 
         async def authed_agent_route(route):
             headers = {}
