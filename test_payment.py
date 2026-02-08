@@ -21,8 +21,9 @@ import time
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction
+from solders.transaction import Transaction
+from solders.message import Message
 from solana.rpc.api import Client
-from solana.transaction import Transaction
 from spl.token.client import Token
 from spl.token.constants import TOKEN_PROGRAM_ID
 from spl.token.instructions import transfer_checked, TransferCheckedParams
@@ -90,9 +91,46 @@ def main():
     print(f"1. Created temp wallet: {payer.pubkey()}")
 
     # 2. Airdrop SOL for fees
-    print("2. Requesting 2 SOL airdrop...")
-    airdrop_sig = client.request_airdrop(payer.pubkey(), 2_000_000_000)
-    wait_for_confirmation(client, airdrop_sig.value, "airdrop")
+    print("2. Requesting SOL airdrop...")
+    airdrop_sig = None
+
+    # Try RPC airdrop first, then web faucet
+    for attempt in range(3):
+        try:
+            resp = client.request_airdrop(payer.pubkey(), 1_000_000_000)
+            airdrop_sig = resp.value
+            print(f"   RPC airdrop submitted: {airdrop_sig}")
+            break
+        except Exception as e:
+            print(f"   RPC airdrop attempt {attempt + 1} failed: {e}")
+            time.sleep(3)
+
+    if airdrop_sig is None:
+        # Try the web faucet as fallback
+        import requests as req
+        print("   Trying web faucet (faucet.solana.com)...")
+        try:
+            faucet_resp = req.post(
+                "https://faucet.solana.com/",
+                json={"walletAddress": str(payer.pubkey()), "network": "devnet"},
+                timeout=30,
+            )
+            if faucet_resp.ok:
+                print(f"   Web faucet response: {faucet_resp.text[:100]}")
+            else:
+                print(f"   Web faucet returned {faucet_resp.status_code}")
+        except Exception as e:
+            print(f"   Web faucet failed: {e}")
+
+    if airdrop_sig is None:
+        print()
+        print("   ERROR: Could not airdrop SOL. The devnet faucet is rate-limited.")
+        print("   You can manually airdrop from https://faucet.solana.com")
+        print(f"   Wallet to fund: {payer.pubkey()}")
+        print("   Or try again in a few minutes.")
+        sys.exit(1)
+
+    wait_for_confirmation(client, airdrop_sig, "airdrop")
 
     balance = client.get_balance(payer.pubkey()).value
     print(f"   Balance: {balance / 1e9} SOL")
@@ -142,14 +180,19 @@ def main():
     blockhash_resp = client.get_latest_blockhash()
     recent_blockhash = blockhash_resp.value.blockhash
 
-    tx = Transaction(
-        fee_payer=payer.pubkey(),
-        recent_blockhash=recent_blockhash,
+    msg = Message.new_with_blockhash(
+        [transfer_ix, memo_ix],
+        payer.pubkey(),
+        recent_blockhash,
     )
-    tx.add(transfer_ix, memo_ix)
-    tx.sign(payer)
+    tx = Transaction.new_signed_with_payer(
+        [transfer_ix, memo_ix],
+        payer.pubkey(),
+        [payer],
+        recent_blockhash,
+    )
 
-    result = client.send_transaction(tx, payer)
+    result = client.send_transaction(tx)
     tx_sig = result.value
     print(f"   Transaction: {tx_sig}")
     wait_for_confirmation(client, tx_sig, "transfer")
