@@ -6,31 +6,36 @@ const {
   Keypair,
   Transaction,
   PublicKey,
+  SystemProgram,
   sendAndConfirmTransaction,
   LAMPORTS_PER_SOL,
 } = require("@solana/web3.js");
-const {
-  getOrCreateAssociatedTokenAccount,
-  createTransferCheckedInstruction,
-  createMint,
-  mintTo,
-} = require("@solana/spl-token");
 const { createMemoInstruction } = require("@solana/spl-memo");
 const bs58 = require("bs58");
 
-const TOKEN_DECIMALS = 6; // same as USDC
 const DEVNET_RPC = "https://api.devnet.solana.com";
 const BOT_WALLET_FILE = path.join(__dirname, "bot-wallet.json");
 
 // ---------------------------------------------------------------------------
-// Step 1: Parse the landing page with a headless browser (detected as bot)
+// Step 1: Launch browser and parse the landing page (keep browser open)
 // ---------------------------------------------------------------------------
-async function parseLandingPage() {
+async function launchAndParsePage() {
   const filePath = "file://" + path.resolve(__dirname, "index.html");
   console.log("[1/5] Launching headless browser...");
 
-  const browser = await puppeteer.launch({ headless: true });
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--disable-web-security", "--allow-file-access-from-files"],
+  });
   const page = await browser.newPage();
+
+  // Log browser console errors for debugging
+  page.on("console", (msg) => {
+    if (msg.type() === "error") {
+      console.log(`  [browser error]`, msg.text());
+    }
+  });
+
   await page.goto(filePath, { waitUntil: "networkidle0" });
 
   const walletAddress = await page.$eval(
@@ -40,12 +45,10 @@ async function parseLandingPage() {
 
   const refId = await page.$eval("#ref-id", (el) => el.textContent.trim());
 
-  await browser.close();
-
   console.log("  Parsed wallet address:", walletAddress);
   console.log("  Parsed reference ID:", refId);
 
-  return { walletAddress, refId };
+  return { browser, page, walletAddress, refId };
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +64,6 @@ function loadOrCreateBotWallet() {
     return keypair;
   }
 
-  // First run — generate and save a new wallet
   const keypair = Keypair.generate();
   const data = {
     publicKey: keypair.publicKey.toBase58(),
@@ -83,13 +85,13 @@ async function fundWithSol(connection, keypair) {
   const balanceSol = balance / LAMPORTS_PER_SOL;
   console.log("  Current balance:", balanceSol, "SOL");
 
-  if (balanceSol >= 0.5) {
+  if (balanceSol >= 0.1) {
     console.log("  Sufficient balance, skipping airdrop.");
     return;
   }
 
   console.log("  Requesting SOL airdrop on devnet...");
-  const amounts = [2 * LAMPORTS_PER_SOL, 1 * LAMPORTS_PER_SOL, 0.5 * LAMPORTS_PER_SOL];
+  const amounts = [1 * LAMPORTS_PER_SOL, 0.5 * LAMPORTS_PER_SOL];
   const maxRetries = 3;
 
   for (const amount of amounts) {
@@ -112,86 +114,34 @@ async function fundWithSol(connection, keypair) {
     }
   }
 
-  throw new Error("Could not airdrop SOL after all attempts. Devnet faucet may be rate-limited — try again later.");
+  throw new Error("Could not airdrop SOL. Devnet faucet may be rate-limited — try again later.");
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: Create a mock USDC token and mint tokens to the bot wallet
+// Step 4: Send smallest SOL transfer with the reference ID as memo
 // ---------------------------------------------------------------------------
-async function createAndMintToken(connection, botKeypair) {
-  console.log("\n[4/5] Creating mock USDC token on devnet...");
-
-  // Create a new SPL token mint (bot is mint authority)
-  const mint = await createMint(
-    connection,
-    botKeypair,           // payer
-    botKeypair.publicKey, // mint authority
-    null,                 // freeze authority (none)
-    TOKEN_DECIMALS        // decimals (6, like USDC)
-  );
-
-  console.log("  Mock USDC mint:", mint.toBase58());
-
-  // Create the bot's associated token account for this mint
-  const botAta = await getOrCreateAssociatedTokenAccount(
-    connection,
-    botKeypair,
-    mint,
-    botKeypair.publicKey
-  );
-
-  // Mint just 1 token (enough for the smallest transfer)
-  const mintAmount = 1 * 10 ** TOKEN_DECIMALS;
-  await mintTo(
-    connection,
-    botKeypair,           // payer
-    mint,                 // the token mint
-    botAta.address,       // destination ATA
-    botKeypair.publicKey, // mint authority
-    mintAmount            // raw amount
-  );
-
-  console.log("  Minted 1 token to bot wallet");
-
-  return { mint, botAta };
-}
-
-// ---------------------------------------------------------------------------
-// Step 5: Send the smallest possible amount to the recipient with memo
-// ---------------------------------------------------------------------------
-async function sendToken(connection, botKeypair, mint, botAta, recipientAddress, refId) {
-  const smallest = 1; // 1 raw unit = 0.000001 tokens (with 6 decimals)
-  console.log("\n[5/5] Sending 0.000001 mock USDC to recipient...");
+async function sendPayment(connection, botKeypair, recipientAddress, refId) {
+  console.log("\n[4/5] Sending payment with memo...");
   const recipientPubkey = new PublicKey(recipientAddress);
+  const lamports = 1_000_000; // 0.001 SOL (enough to cover rent-exempt minimum)
 
   console.log("  From:", botKeypair.publicKey.toBase58());
   console.log("  To:", recipientAddress);
-  console.log("  Mint:", mint.toBase58());
-  console.log("  Amount: 0.000001 token (1 raw unit)");
+  console.log("  Amount: 0.001 SOL");
   console.log("  Memo:", refId);
 
-  // Get or create the recipient's ATA (bot pays for creation)
-  const recipientAta = await getOrCreateAssociatedTokenAccount(
-    connection,
-    botKeypair,
-    mint,
-    recipientPubkey
-  );
-
-  // Build the transaction: memo + transfer
   const transaction = new Transaction();
 
+  // Memo instruction first
   transaction.add(createMemoInstruction(refId, [botKeypair.publicKey]));
 
+  // SOL transfer (1 lamport — smallest possible)
   transaction.add(
-    createTransferCheckedInstruction(
-      botAta.address,
-      mint,
-      recipientAta.address,
-      botKeypair.publicKey,
-      smallest,
-      TOKEN_DECIMALS
-    )
+    SystemProgram.transfer({
+      fromPubkey: botKeypair.publicKey,
+      toPubkey: recipientPubkey,
+      lamports: lamports,
+    })
   );
 
   const signature = await sendAndConfirmTransaction(connection, transaction, [
@@ -209,28 +159,61 @@ async function sendToken(connection, botKeypair, mint, botAta, recipientAddress,
 }
 
 // ---------------------------------------------------------------------------
+// Step 5: Wait for the page to detect the payment and grant access
+// ---------------------------------------------------------------------------
+async function waitForAccess(page) {
+  console.log("\n[5/5] Waiting for page to verify payment and grant access...");
+
+  const timeout = 120000; // 2 minutes
+  const pollInterval = 2000;
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    const granted = await page.evaluate(() => {
+      const gated = document.getElementById("gated-content");
+      return gated && gated.style.display === "block";
+    });
+
+    if (granted) {
+      console.log("  Access granted! Gated content is now visible.");
+      return true;
+    }
+
+    await new Promise((r) => setTimeout(r, pollInterval));
+  }
+
+  console.log("  Timed out waiting for access.");
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  // Parse the landing page to get the target wallet and reference ID
-  const { walletAddress, refId } = await parseLandingPage();
+  const { browser, page, walletAddress, refId } = await launchAndParsePage();
 
-  // Load or create a persistent bot wallet
-  const botKeypair = loadOrCreateBotWallet();
+  try {
+    const botKeypair = loadOrCreateBotWallet();
+    const connection = new Connection(DEVNET_RPC, "confirmed");
 
-  // Connect to devnet
-  const connection = new Connection(DEVNET_RPC, "confirmed");
+    await fundWithSol(connection, botKeypair);
+    await sendPayment(connection, botKeypair, walletAddress, refId);
 
-  // Fund the bot wallet with SOL (skips if already funded)
-  await fundWithSol(connection, botKeypair);
+    const accessGranted = await waitForAccess(page);
 
-  // Create a mock USDC token and mint tokens to the bot
-  const { mint, botAta } = await createAndMintToken(connection, botKeypair);
-
-  // Send the smallest possible amount to the website's wallet with the reference ID in the memo
-  await sendToken(connection, botKeypair, mint, botAta, walletAddress, refId);
-
-  console.log("\nDone. Bot successfully paid to access the site.");
+    if (accessGranted) {
+      const pageTitle = await page.$eval(
+        "#gated-content .hero h2",
+        (el) => el.textContent.trim()
+      );
+      console.log(`\n  Page content title: "${pageTitle}"`);
+      console.log("\nDone. Bot successfully paid and accessed the site.");
+    } else {
+      console.log("\nDone. Payment was sent but page did not grant access within timeout.");
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 main().catch((err) => {

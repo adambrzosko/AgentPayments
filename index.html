@@ -134,15 +134,10 @@
         <p style="font-size: 0.85rem; color: #aaa;">Send payment to: <code>5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft</code></p>
         <p style="font-size: 0.85rem; color: #aaa;">Include this reference ID in the transaction memo: <code id="ref-id"></code></p>
 
-        <!--
-        <div class="wallet-form">
-            <label for="wallet-input">Wallet Address</label>
-            <input type="text" id="wallet-input" placeholder="0x... or bc1... or equivalent" autocomplete="off" spellcheck="false">
-            <p id="wallet-error" class="wallet-error">Please enter a valid wallet address.</p>
-            <p id="wallet-success" class="wallet-success">Wallet verified on-chain. Granting access...</p>
-            <button id="wallet-submit">Submit &amp; Access</button>
-        </div>
-        -->
+        <hr class="divider">
+        <p id="payment-status" style="font-size: 0.9rem; color: #aaa;"><span class="spinner"></span> Waiting for payment...</p>
+        <p id="payment-success" style="font-size: 0.9rem; color: #7bed9f; display: none;">Payment confirmed! Granting access...</p>
+        <p id="payment-timeout" style="font-size: 0.85rem; color: #ff6b6b; display: none;">Payment verification timed out. Reload to try again.</p>
 
         <hr class="divider">
         <p style="font-size: 0.8rem; color: #888;">Or pass a valid token via query parameter:</p>
@@ -285,86 +280,76 @@
                 return null;
             }
 
-            /*
-            // --- On-chain verification ---
-            var walletSuccess = document.getElementById('wallet-success');
+            // --- Payment verification via Solana devnet RPC ---
+            var SOLANA_RPC = 'https://api.devnet.solana.com';
+            var RECIPIENT_WALLET = '5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft';
+            var POLL_INTERVAL = 5000; // 5 seconds
+            var POLL_TIMEOUT = 300000; // 5 minutes
 
-            function verifyEthereum(addr) {
-                return fetch('https://cloudflare-eth.com', {
+            function solanaRpc(method, rpcParams) {
+                return fetch(SOLANA_RPC, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        jsonrpc: '2.0', id: 1,
-                        method: 'eth_getBalance',
-                        params: [addr, 'latest']
-                    })
+                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: rpcParams })
+                }).then(function (r) { return r.json(); });
+            }
+
+            function checkForPayment(refId) {
+                return solanaRpc('getSignaturesForAddress', [RECIPIENT_WALLET, { limit: 20 }])
+                .then(function (sigData) {
+                    if (sigData.error || !sigData.result || sigData.result.length === 0) return false;
+
+                    // The memo field is included directly in getSignaturesForAddress results
+                    for (var i = 0; i < sigData.result.length; i++) {
+                        var entry = sigData.result[i];
+                        if (entry.memo && entry.memo.indexOf(refId) !== -1) return true;
+                    }
+
+                    // Fallback: check transaction logs for the memo
+                    return sigData.result.reduce(function (chain, entry) {
+                        return chain.then(function (found) {
+                            if (found) return true;
+                            return solanaRpc('getTransaction', [entry.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }])
+                            .then(function (txData) {
+                                if (!txData.result) return false;
+                                var logs = (txData.result.meta && txData.result.meta.logMessages) || [];
+                                for (var j = 0; j < logs.length; j++) {
+                                    if (logs[j].indexOf(refId) !== -1) return true;
+                                }
+                                return false;
+                            })
+                            .catch(function () { return false; });
+                        });
+                    }, Promise.resolve(false));
                 })
-                .then(function (r) { return r.json(); })
-                .then(function (data) {
-                    if (data.error) return { valid: false, reason: 'Address not found on Ethereum network.' };
-                    return { valid: true, chain: 'Ethereum' };
-                });
+                .catch(function () { return false; });
             }
 
-            function verifyBitcoin(addr) {
-                return fetch('https://blockchain.info/rawaddr/' + addr + '?limit=0')
-                .then(function (r) {
-                    if (!r.ok) return { valid: false, reason: 'Address not found on Bitcoin network.' };
-                    return r.json();
-                })
-                .then(function (data) {
-                    if (data.valid === false) return data;
-                    if (data.address) return { valid: true, chain: 'Bitcoin' };
-                    return { valid: false, reason: 'Address not found on Bitcoin network.' };
-                });
-            }
+            function startPaymentPolling(refId) {
+                var statusEl = document.getElementById('payment-status');
+                var successEl = document.getElementById('payment-success');
+                var timeoutEl = document.getElementById('payment-timeout');
+                var startTime = Date.now();
 
-            function verifySolana(addr) {
-                return fetch('https://api.mainnet-beta.solana.com', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        jsonrpc: '2.0', id: 1,
-                        method: 'getAccountInfo',
-                        params: [addr, { encoding: 'base58' }]
-                    })
-                })
-                .then(function (r) { return r.json(); })
-                .then(function (data) {
-                    if (data.error) return { valid: false, reason: 'Address not found on Solana network.' };
-                    return { valid: true, chain: 'Solana' };
-                });
-            }
+                var pollTimer = setInterval(function () {
+                    // Timeout check
+                    if (Date.now() - startTime > POLL_TIMEOUT) {
+                        clearInterval(pollTimer);
+                        statusEl.style.display = 'none';
+                        timeoutEl.style.display = 'block';
+                        return;
+                    }
 
-            function verifyOnChain(addr) {
-                var chain = detectChain(addr);
-                if (!chain) return Promise.resolve({ valid: false, reason: 'Unrecognized wallet address format.' });
-                if (chain === 'ethereum') return verifyEthereum(addr);
-                if (chain === 'bitcoin') return verifyBitcoin(addr);
-                if (chain === 'solana') return verifySolana(addr);
+                    checkForPayment(refId).then(function (found) {
+                        if (found) {
+                            clearInterval(pollTimer);
+                            statusEl.style.display = 'none';
+                            successEl.style.display = 'block';
+                            setTimeout(grantAccess, 1500);
+                        }
+                    });
+                }, POLL_INTERVAL);
             }
-
-            function setLoading(loading) {
-                walletSubmit.disabled = loading;
-                walletInput.disabled = loading;
-                if (loading) {
-                    walletSubmit.innerHTML = '<span class="spinner"></span>Verifying...';
-                } else {
-                    walletSubmit.innerHTML = 'Submit &amp; Access';
-                }
-            }
-
-            function showError(msg) {
-                walletError.textContent = msg;
-                walletError.style.display = 'block';
-                walletSuccess.style.display = 'none';
-            }
-
-            function hideMessages() {
-                walletError.style.display = 'none';
-                walletSuccess.style.display = 'none';
-            }
-            */
 
             // --- Access logic ---
             var debugMode = params.get('view') === 'bot';
@@ -379,57 +364,18 @@
             if (debugMode) {
                 document.getElementById('debug-banner').style.display = 'block';
                 showWall();
+                startPaymentPolling(document.getElementById('ref-id').textContent);
             }
             // 3. If visitor is human → show content directly
             else if (!isBot()) {
                 grantAccess();
                 return;
             }
-            // 4. Bot detected → show payment wall
+            // 4. Bot detected → show payment wall and start polling for payment
             else {
                 showWall();
+                startPaymentPolling(document.getElementById('ref-id').textContent);
             }
-
-            /*
-            // Handle wallet submission with on-chain verification
-            walletSubmit.addEventListener('click', function () {
-                var address = walletInput.value.trim();
-                if (!address) {
-                    showError('Please enter a wallet address.');
-                    return;
-                }
-                if (!detectChain(address)) {
-                    showError('Unrecognized format. Supported: Ethereum (0x...), Bitcoin (bc1.../1.../3...), Solana.');
-                    return;
-                }
-
-                hideMessages();
-                setLoading(true);
-
-                verifyOnChain(address)
-                .then(function (result) {
-                    setLoading(false);
-                    if (result.valid) {
-                        walletSuccess.textContent = result.chain + ' wallet verified on-chain. Granting access...';
-                        walletSuccess.style.display = 'block';
-                        walletError.style.display = 'none';
-                        setTimeout(grantAccess, 1000);
-                    } else {
-                        showError(result.reason || 'Wallet could not be verified on-chain.');
-                    }
-                })
-                .catch(function () {
-                    setLoading(false);
-                    showError('Network error: could not reach blockchain. Please try again.');
-                });
-            });
-
-            walletInput.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter') {
-                    walletSubmit.click();
-                }
-            });
-            */
         })();
     </script>
 </body>
