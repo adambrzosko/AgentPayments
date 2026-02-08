@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentPayments</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #333; line-height: 1.6; }
+        header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; }
+        header h1 { font-size: 1.5rem; }
+        main { max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; }
+        h2 { margin-bottom: 0.75rem; color: #1a1a2e; }
+        p { margin-bottom: 1rem; }
+        .hero { background: #f4f4f8; border-radius: 8px; padding: 2rem; margin-bottom: 2rem; }
+        .section { margin-bottom: 2rem; }
+        footer { text-align: center; padding: 1.5rem; color: #888; font-size: 0.85rem; border-top: 1px solid #eee; margin-top: 3rem; }
+
+        /* Gate: hide content by default */
+        .gated-content { display: none; }
+
+        /* Payment wall */
+        .payment-wall {
+            display: none;
+            max-width: 600px;
+            margin: 4rem auto;
+            padding: 2.5rem;
+            text-align: center;
+            background: #1a1a2e;
+            color: #fff;
+            border-radius: 12px;
+        }
+        .payment-wall h2 { color: #ff6b6b; margin-bottom: 1rem; font-size: 1.75rem; }
+        .payment-wall p { color: #ccc; margin-bottom: 1.25rem; }
+        .payment-wall code {
+            display: inline-block;
+            background: #2d2d4e;
+            color: #7bed9f;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+        .payment-wall .divider {
+            border: none;
+            border-top: 1px solid #3a3a5e;
+            margin: 1.5rem 0;
+        }
+        .wallet-form label {
+            display: block;
+            color: #aaa;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+        }
+        .wallet-form input[type="text"] {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid #3a3a5e;
+            border-radius: 8px;
+            background: #2d2d4e;
+            color: #fff;
+            font-size: 0.95rem;
+            font-family: monospace;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .wallet-form input[type="text"]:focus {
+            border-color: #7bed9f;
+        }
+        .wallet-form input[type="text"]::placeholder {
+            color: #666;
+        }
+        .wallet-form button {
+            margin-top: 1rem;
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 8px;
+            background: #7bed9f;
+            color: #1a1a2e;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .wallet-form button:hover {
+            background: #5fd882;
+        }
+        .wallet-error {
+            color: #ff6b6b;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            display: none;
+        }
+        .wallet-form button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .wallet-form button .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #1a1a2e;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            vertical-align: middle;
+            margin-right: 0.4rem;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .wallet-success {
+            color: #7bed9f;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            display: none;
+        }
+        .debug-banner {
+            display: none;
+            background: #ff9f43;
+            color: #1a1a2e;
+            text-align: center;
+            padding: 0.5rem 1rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div id="debug-banner" class="debug-banner">DEBUG MODE: Viewing as bot (?view=bot)</div>
+
+    <!-- Payment wall: shown when access_token is missing or invalid -->
+    <div id="payment-wall" class="payment-wall">
+        <h2>Access Denied &mdash; Payment Required</h2>
+        <p>This resource requires payment to access. Submit your crypto wallet address to proceed.</p>
+        <p style="font-size: 0.85rem; color: #aaa;">Send payment to: <code>5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft</code></p>
+        <p style="font-size: 0.85rem; color: #aaa;">Include this reference ID in the transaction memo: <code id="ref-id"></code></p>
+
+        <hr class="divider">
+        <p id="payment-status" style="font-size: 0.9rem; color: #aaa;"><span class="spinner"></span> Waiting for payment...</p>
+        <p id="payment-success" style="font-size: 0.9rem; color: #7bed9f; display: none;">Payment confirmed! Granting access...</p>
+        <p id="payment-timeout" style="font-size: 0.85rem; color: #ff6b6b; display: none;">Payment verification timed out. Reload to try again.</p>
+
+        <hr class="divider">
+        <p style="font-size: 0.8rem; color: #888;">Or pass a valid token via query parameter:</p>
+        <p><code>?access_token=&lt;your_token&gt;</code></p>
+    </div>
+
+    <!-- Gated content: only shown with valid access_token -->
+    <div id="gated-content" class="gated-content">
+        <header>
+            <h1>AgentPayments</h1>
+        </header>
+
+        <main>
+            <div class="hero">
+                <h2>Welcome to AgentPayments</h2>
+                <p>
+                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+                    incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
+                    exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+                </p>
+            </div>
+
+            <div class="section">
+                <h2>About</h2>
+                <p>
+                    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
+                    fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
+                    culpa qui officia deserunt mollit anim id est laborum. Curabitur pretium tincidunt
+                    lacus. Nulla gravida orci a odio.
+                </p>
+                <p>
+                    Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus
+                    magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis
+                    ac tellus et risus vulputate vehicula. Donec lobortis risus a elit.
+                </p>
+            </div>
+
+            <div class="section">
+                <h2>Services</h2>
+                <p>
+                    Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac
+                    turpis egestas. Vestibulum tortor quam, feugiat vitae, ultricies eget, tempor sit
+                    amet, ante. Donec eu libero sit amet quam egestas semper. Aenean ultricies mi
+                    vitae est. Mauris placerat eleifend leo.
+                </p>
+            </div>
+
+            <div class="section">
+                <h2>Contact</h2>
+                <p>
+                    Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu
+                    vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis,
+                    accumsan porttitor, facilisis luctus, metus.
+                </p>
+            </div>
+        </main>
+
+        <footer>
+            AgentPayments &copy; 2026
+        </footer>
+    </div>
+
+    <script>
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            var wall = document.getElementById('payment-wall');
+            var content = document.getElementById('gated-content');
+            // var walletInput = document.getElementById('wallet-input');
+            // var walletError = document.getElementById('wallet-error');
+            // var walletSubmit = document.getElementById('wallet-submit');
+
+            function grantAccess() {
+                wall.style.display = 'none';
+                content.style.display = 'block';
+            }
+
+            function showWall() {
+                wall.style.display = 'block';
+                // Generate a unique alphanumeric reference ID for this visit
+                var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                var refId = '';
+                var arr = new Uint8Array(16);
+                crypto.getRandomValues(arr);
+                for (var i = 0; i < arr.length; i++) {
+                    refId += chars.charAt(arr[i] % chars.length);
+                }
+                document.getElementById('ref-id').textContent = refId;
+            }
+
+            // --- Bot detection ---
+            function isBot() {
+                var ua = navigator.userAgent || '';
+
+                // 1. WebDriver flag (Selenium, Puppeteer, Playwright, etc.)
+                if (navigator.webdriver) return true;
+
+                // 2. Known bot/crawler user-agent patterns
+                var botPatterns = [
+                    /bot\b/i, /crawl/i, /spider/i, /slurp/i, /mediapartners/i,
+                    /headless/i, /phantom/i, /puppeteer/i, /playwright/i,
+                    /selenium/i, /wget/i, /curl/i, /fetch/i, /python/i,
+                    /httpx/i, /axios/i, /node-fetch/i, /go-http/i, /java\//i,
+                    /scrapy/i, /lighthouse/i, /pagespeed/i, /googlebot/i,
+                    /bingbot/i, /yandexbot/i, /baiduspider/i, /duckduckbot/i,
+                    /facebookexternalhit/i, /twitterbot/i, /rogerbot/i,
+                    /linkedinbot/i, /embedly/i, /quora link/i, /showyoubot/i,
+                    /outbrain/i, /pinterest/i, /applebot/i, /semrushbot/i,
+                    /ahrefsbot/i, /mj12bot/i, /dotbot/i, /petalbot/i
+                ];
+                for (var i = 0; i < botPatterns.length; i++) {
+                    if (botPatterns[i].test(ua)) return true;
+                }
+
+                // 3. Headless Chrome detection
+                if (/HeadlessChrome/.test(ua)) return true;
+
+                // 4. Missing browser plugins (headless browsers often have none)
+                if (navigator.plugins && navigator.plugins.length === 0 &&
+                    /Chrome/.test(ua) && !/Mobile/.test(ua)) return true;
+
+                // 5. Missing languages
+                if (!navigator.languages || navigator.languages.length === 0) return true;
+
+                // 6. Automation-specific properties
+                if (window._phantom || window.__nightmare || window.callPhantom) return true;
+                if (document.__selenium_unwrapped || document.__webdriver_evaluate ||
+                    document.__driver_evaluate) return true;
+
+                // 7. Chrome-specific: missing chrome runtime object in Chrome UA
+                if (/Chrome/.test(ua) && !window.chrome) return true;
+
+                return false;
+            }
+
+            // --- Wallet format detection ---
+            function detectChain(addr) {
+                if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return 'ethereum';
+                if (/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{24,61}$/.test(addr)) return 'bitcoin';
+                if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return 'solana';
+                return null;
+            }
+
+            // --- Payment verification via Solana devnet RPC ---
+            var SOLANA_RPC = 'https://api.devnet.solana.com';
+            var RECIPIENT_WALLET = '5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft';
+            var POLL_INTERVAL = 5000; // 5 seconds
+            var POLL_TIMEOUT = 300000; // 5 minutes
+
+            function solanaRpc(method, rpcParams) {
+                return fetch(SOLANA_RPC, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: rpcParams })
+                }).then(function (r) { return r.json(); });
+            }
+
+            function checkForPayment(refId) {
+                return solanaRpc('getSignaturesForAddress', [RECIPIENT_WALLET, { limit: 20 }])
+                .then(function (sigData) {
+                    if (sigData.error || !sigData.result || sigData.result.length === 0) return false;
+
+                    // The memo field is included directly in getSignaturesForAddress results
+                    for (var i = 0; i < sigData.result.length; i++) {
+                        var entry = sigData.result[i];
+                        if (entry.memo && entry.memo.indexOf(refId) !== -1) return true;
+                    }
+
+                    // Fallback: check transaction logs for the memo
+                    return sigData.result.reduce(function (chain, entry) {
+                        return chain.then(function (found) {
+                            if (found) return true;
+                            return solanaRpc('getTransaction', [entry.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }])
+                            .then(function (txData) {
+                                if (!txData.result) return false;
+                                var logs = (txData.result.meta && txData.result.meta.logMessages) || [];
+                                for (var j = 0; j < logs.length; j++) {
+                                    if (logs[j].indexOf(refId) !== -1) return true;
+                                }
+                                return false;
+                            })
+                            .catch(function () { return false; });
+                        });
+                    }, Promise.resolve(false));
+                })
+                .catch(function () { return false; });
+            }
+
+            function startPaymentPolling(refId) {
+                var statusEl = document.getElementById('payment-status');
+                var successEl = document.getElementById('payment-success');
+                var timeoutEl = document.getElementById('payment-timeout');
+                var startTime = Date.now();
+
+                var pollTimer = setInterval(function () {
+                    // Timeout check
+                    if (Date.now() - startTime > POLL_TIMEOUT) {
+                        clearInterval(pollTimer);
+                        statusEl.style.display = 'none';
+                        timeoutEl.style.display = 'block';
+                        return;
+                    }
+
+                    checkForPayment(refId).then(function (found) {
+                        if (found) {
+                            clearInterval(pollTimer);
+                            statusEl.style.display = 'none';
+                            successEl.style.display = 'block';
+                            setTimeout(grantAccess, 1500);
+                        }
+                    });
+                }, POLL_INTERVAL);
+            }
+
+            // --- Access logic ---
+            var debugMode = params.get('view') === 'bot';
+
+            // 1. Valid token in URL always grants access (unless debugging)
+            if (!debugMode && params.get('access_token') === 'pay2access') {
+                grantAccess();
+                return;
+            }
+
+            // 2. Debug mode: force bot view for humans
+            if (debugMode) {
+                document.getElementById('debug-banner').style.display = 'block';
+                showWall();
+                startPaymentPolling(document.getElementById('ref-id').textContent);
+            }
+            // 3. If visitor is human → show content directly
+            else if (!isBot()) {
+                grantAccess();
+                return;
+            }
+            // 4. Bot detected → show payment wall and start polling for payment
+            else {
+                showWall();
+                startPaymentPolling(document.getElementById('ref-id').textContent);
+            }
+        })();
+    </script>
+</body>
+</html>
