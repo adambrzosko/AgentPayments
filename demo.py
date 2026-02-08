@@ -379,13 +379,9 @@ async def main():
     print()
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=False,
-            args=["--start-maximized"],
-        )
+        browser = await p.firefox.launch(headless=False)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
-            no_viewport=False,
         )
 
         # Override webdriver for Phase 3 (browser challenge)
@@ -399,24 +395,28 @@ async def main():
         print("[Phase 1] Agent requests site → DENIED")
 
         # Intercept requests: strip Sec-Fetch headers to simulate an agent
+        captured_body = {}
+
         async def agent_route(route):
-            headers = {}
-            for k, v in route.request.headers.items():
-                if not k.lower().startswith("sec-"):
-                    headers[k] = v
-            headers["user-agent"] = "AgentBot/1.0"
-            await route.continue_(headers=headers)
+            resp = await route.fetch(headers={
+                k: v for k, v in route.request.headers.items()
+                if not k.lower().startswith("sec-")
+            } | {"user-agent": "AgentBot/1.0"})
+            body = await resp.text()
+            captured_body["text"] = body
+            await route.fulfill(response=resp, body=body)
 
-        await page.route("**/*", agent_route)
+        await page.route(f"{site_url.rstrip('/')}/**", agent_route)
+        await page.route(site_url.rstrip("/"), agent_route)
 
-        response = await page.goto(site_url)
-        body = await response.text()
+        await page.goto(site_url, wait_until="networkidle")
 
+        agent_key = "ag_demo_key"
         try:
-            data = json.loads(body)
-            agent_key = data.get("your_key", "ag_demo_key")
-        except json.JSONDecodeError:
-            agent_key = "ag_demo_key"
+            data = json.loads(captured_body.get("text", "{}"))
+            agent_key = data.get("your_key", agent_key)
+        except Exception:
+            pass
 
         print(f"  Got 402 — key: {agent_key}")
 
