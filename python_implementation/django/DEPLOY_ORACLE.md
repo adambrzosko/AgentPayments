@@ -27,16 +27,16 @@ git clone <YOUR_REPO_URL> .
 python3 -m venv /opt/agentpayments/.venv
 source /opt/agentpayments/.venv/bin/activate
 pip install --upgrade pip
-pip install -r django_deployment/requirements.txt
+pip install -r python_implementation/django/requirements.txt
 ```
 
 ## 4) Configure environment
 
 ```bash
-cp /opt/agentpayments/django_deployment/.env.example /opt/agentpayments/django_deployment/.env
+cp /opt/agentpayments/python_implementation/django/.env.example /opt/agentpayments/python_implementation/django/.env
 ```
 
-Edit `django_deployment/.env`:
+Edit `python_implementation/django/.env`:
 
 ```dotenv
 DEBUG=false
@@ -55,13 +55,13 @@ If you later add TLS, set `CSRF_TRUSTED_ORIGINS` to `https://...`.
 
 ```bash
 source /opt/agentpayments/.venv/bin/activate
-python3 /opt/agentpayments/django_deployment/manage.py check
+python3 /opt/agentpayments/python_implementation/django/manage.py check
 ```
 
 ## 6) Install systemd service
 
 ```bash
-sudo cp /opt/agentpayments/django_deployment/deploy/oracle/agentpayments.service /etc/systemd/system/agentpayments.service
+sudo cp /opt/agentpayments/python_implementation/django/deploy/oracle/agentpayments.service /etc/systemd/system/agentpayments.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now agentpayments
 sudo systemctl status agentpayments --no-pager
@@ -70,7 +70,7 @@ sudo systemctl status agentpayments --no-pager
 ## 7) Configure nginx
 
 ```bash
-sudo cp /opt/agentpayments/django_deployment/deploy/oracle/nginx-agentpayments.conf /etc/nginx/sites-available/agentpayments
+sudo cp /opt/agentpayments/python_implementation/django/deploy/oracle/nginx-agentpayments.conf /etc/nginx/sites-available/agentpayments
 sudo ln -sf /etc/nginx/sites-available/agentpayments /etc/nginx/sites-enabled/agentpayments
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
@@ -127,7 +127,7 @@ sudo certbot renew --dry-run
 ```
 
 ### 5) Django env update
-Set CSRF trusted origins to HTTPS origin in `django_deployment/.env`:
+Set CSRF trusted origins to HTTPS origin in `python_implementation/django/.env`:
 
 ```dotenv
 CSRF_TRUSTED_ORIGINS=https://pay.yourdomain.com

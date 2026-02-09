@@ -5,8 +5,8 @@ After=network.target
 [Service]
 User=ubuntu
 Group=www-data
-WorkingDirectory=/opt/agentpayments/django_deployment
-EnvironmentFile=/opt/agentpayments/django_deployment/.env
+WorkingDirectory=/opt/agentpayments/python_implementation/django
+EnvironmentFile=/opt/agentpayments/python_implementation/django/.env
 ExecStart=/opt/agentpayments/.venv/bin/gunicorn agentpayments.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 60
 Restart=always
 RestartSec=3

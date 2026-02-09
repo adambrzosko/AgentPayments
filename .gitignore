@@ -7,6 +7,6 @@ jsons/.test-keypair.json
 node_modules/
 .next/
 .vercel/
-nextjs_deployment/node_modules/
-nextjs_deployment/.next/
-nextjs_deployment/.vercel/
+next_implementation/node_modules/
+next_implementation/.next/
+next_implementation/.vercel/

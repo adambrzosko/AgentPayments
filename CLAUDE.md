@@ -23,10 +23,10 @@ Therefore:
   - `sdk/python/`: **Implementation #3 complete** (`agentpayments-python`, Django/FastAPI/Flask adapters).
   - `sdk/next/`: **Implementation #4 complete** (`@agentpayments/next`, middleware wrapper).
   - Planned: proxy adapter.
-- `django_deployment/`: Django integration demo.
-- `netlify_deployment/`: Netlify deployment files.
-- `cloudflare_deployment/`: Cloudflare Worker integration demo.
-- `nodejs_deployment/`: Node/Express integration demo.
+- `python_implementation/django/`: Django integration demo.
+- `edge_implementation/netlify/`: Netlify deployment files.
+- `edge_implementation/cloudflare_worker/`: Cloudflare Worker integration demo.
+- `node_implementation/`: Node/Express integration demo.
 - `scripts/`: Demo and verification scripts.
 
 ## Expectations
@@ -37,9 +37,9 @@ Therefore:
 
 ## Verification
 - After Django edits, run:
-  - `python django_deployment/manage.py check`
+  - `python python_implementation/django/manage.py check`
 - After Cloudflare integration changes, run:
-  - `npx wrangler deploy` from `cloudflare_deployment/` when requested
+  - `npx wrangler deploy` from `edge_implementation/cloudflare_worker/` when requested
 - If behavior changed, add or update a small test where practical.
 - Report any command you could not run and why.
 

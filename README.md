@@ -11,10 +11,10 @@ Stripe-style goal: vendors should install/import our package and add only a coup
 There are three separate test deployments (nodejs, django, netlify/typescript + cloudflare).
 These exist to prove the same shared gate can be integrated across common web architectures.
 
-- `cloudflare_deployment/`: Worker wrapper + static assets.
-- `django_deployment/`: Django wrapper + demo static files.
-- `netlify_deployment/`: Netlify edge wrapper + demo static files.
-- `nodejs_deployment/`: Express integration demo (thin wrapper over `@agentpayments/node` local package).
+- `edge_implementation/cloudflare_worker/`: Worker wrapper + static assets.
+- `python_implementation/django/`: Django wrapper + demo static files.
+- `edge_implementation/netlify/`: Netlify edge wrapper + demo static files.
+- `node_implementation/`: Express integration demo (thin wrapper over `@agentpayments/node` local package).
 - `sdk/`: Shared gate logic used by deployment wrappers (JS/TS + Python).
   - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
   - `sdk/edge/`: **Implementation #2 complete** (`@agentpayments/edge`, Cloudflare/Netlify/Vercel adapters).
@@ -30,16 +30,24 @@ These exist to prove the same shared gate can be integrated across common web ar
 
 Rule: deployment folders stay thin; core gate behavior belongs in `sdk/` packages.
 
-## Django (Oracle)
-For Oracle Always Free VM deployment of the Django app, see `django_deployment/DEPLOY_ORACLE.md`.
+## Public demo URLs
+- **Edge implementation (Cloudflare Worker)**: https://agentpayments-cloudflare.matthew-newell.workers.dev
+- **Django/Python implementation (Oracle VM, HTTPS)**: https://clankertax.tearsheet.one
+- **Next.js implementation (Vercel alias)**: https://nextjsdeployment-five.vercel.app
 
-Site is accessible via public endpoint http://140.238.68.134
+Also, in case needed:
+- **Django Oracle VM, direct IP HTTP**: http://140.238.68.134
+- **Next.js Vercel, actual URL**: https://nextjsdeployment-h3sqvhkx0-matt-newells-projects.vercel.app
+
+
+## Django (Oracle)
+For Oracle Always Free VM deployment of the Django app, see `python_implementation/django/DEPLOY_ORACLE.md`.
 
 ## JSON Files
 - `.test-keypair.json`: Local devnet Solana keypair used by `test_payment.py` and `demo.py` as a persistent payer wallet. Safe
   to delete; scripts will recreate it.
 - `bot-wallet.json`: Wallet data used by the bot visitor script (`bot_visitor.py`).
 - `wallet-keys.json`: Generated wallet keys used by local scripts (created by `setup_wallet.py`).
-- `netlify_deployment/.well-known/agent-access.json`: Public discovery file served at `/.well-known/agent-access.json` for the
+- `edge_implementation/netlify/.well-known/agent-access.json`: Public discovery file served at `/.well-known/agent-access.json` for the
   Netlify demo site.
-- `django_deployment/.well-known/agent-access.json`: Same discovery file for the Django demo site.
+- `python_implementation/django/.well-known/agent-access.json`: Same discovery file for the Django demo site.

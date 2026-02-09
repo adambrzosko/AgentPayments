@@ -24,7 +24,7 @@ from solders.transaction import Transaction
 DEVNET_RPC = "https://api.devnet.solana.com"
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 BOT_WALLET_FILE = Path(__file__).resolve().parent / "bot-wallet.json"
-DEFAULT_HTML = Path(__file__).resolve().parent / "django_deployment" / "static" / "index.html"
+DEFAULT_HTML = Path(__file__).resolve().parent / "python_implementation/django" / "static" / "index.html"
 
 
 async def launch_and_parse_page(playwright, target_url: str):
@@ -192,7 +192,7 @@ async def main():
     parser.add_argument(
         "--file",
         default=str(DEFAULT_HTML),
-        help="Path to the local HTML file (default: django_deployment/static/index.html).",
+        help="Path to the local HTML file (default: python_implementation/django/static/index.html).",
     )
     args = parser.parse_args()
 

@@ -19,10 +19,10 @@ This file defines how coding agents should work in this repository.
   - `sdk/python/`: **Implementation #3 (done)**, python package (`agentpayments-python`) with Django/FastAPI/Flask adapters.
   - `sdk/next/`: **Implementation #4 (done)**, Next.js wrapper package (`@agentpayments/next`).
   - Next target: proxy adapter.
-- `django_deployment/`: Django integration demo (thin wrapper).
-- `netlify_deployment/`: Static + Netlify edge deployment demo (thin wrapper).
-- `cloudflare_deployment/`: Cloudflare Worker integration demo (thin wrapper).
-- `nodejs_deployment/`: Node/Express integration demo (thin wrapper).
+- `python_implementation/django/`: Django integration demo (thin wrapper).
+- `edge_implementation/netlify/`: Static + Netlify edge deployment demo (thin wrapper).
+- `edge_implementation/cloudflare_worker/`: Cloudflare Worker integration demo (thin wrapper).
+- `node_implementation/`: Node/Express integration demo (thin wrapper).
 - `scripts/`: Utility and demo scripts.
 
 ## Working Rules
@@ -36,9 +36,9 @@ This file defines how coding agents should work in this repository.
 
 ## Validation
 - For Django changes, run:
-  - `python django_deployment/manage.py check`
+  - `python python_implementation/django/manage.py check`
 - For Cloudflare changes, run:
-  - `npx wrangler deploy` from `cloudflare_deployment/` when requested
+  - `npx wrangler deploy` from `edge_implementation/cloudflare_worker/` when requested
 - For script changes, run only the affected script with safe/local settings.
 - If tests are added later, run the smallest relevant subset first.
 

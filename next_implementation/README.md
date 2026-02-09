@@ -4,7 +4,7 @@ Demo Next.js app wired with local AgentPayments middleware.
 
 ## Run locally
 ```bash
-cd nextjs_deployment
+cd next_implementation
 cp .env.example .env.local
 npm install
 npm run dev

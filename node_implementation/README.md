@@ -5,7 +5,7 @@ Vanilla customer-style Express app that shows plug-and-play AgentPayments wiring
 ## Run
 
 ```bash
-cd nodejs_deployment
+cd node_implementation
 cp .env.example .env
 npm install
 npm start
