@@ -1,0 +1,15 @@
+name = "agentpayments-cloudflare"
+main = "src/worker.js"
+compatibility_date = "2026-02-09"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+DEBUG = "true"
+# Set these in production via `wrangler secret put` / dashboard:
+# CHALLENGE_SECRET
+# HOME_WALLET_ADDRESS
+# SOLANA_RPC_URL
+# USDC_MINT

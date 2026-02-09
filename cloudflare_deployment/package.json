@@ -1,0 +1,11 @@
+{
+  "name": "agentpayments-cloudflare-deployment",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Workers deployment for AgentPayments",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/worker.js"
+  }
+}

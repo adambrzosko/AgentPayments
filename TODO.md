@@ -1,3 +1,14 @@
+
+## TO DO
+* Get sites hosted
+* Package bot blocking, bot communication, and talking to our servers into a "library" (mockup via file import is fine)
+  * Improve bot communication - right now ChatGPT doesn't see the msg
+* Figure out how to implement into the three deployments
+* Flesh out our backend ...
+* Write a comprehensive test script to hit any/all of the deployments. 
+
+
+
 ## Ultimate goals
 
 #### Vendor Payment Rails

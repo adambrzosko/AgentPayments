@@ -1,2 +1,5 @@
 solana>=0.32.0
 requests>=2.28.0
+playwright>=1.42.0
+base58>=2.1.1
+bip-utils>=2.9.3

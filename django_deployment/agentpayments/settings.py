@@ -7,13 +7,20 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+def _csv_env(name: str, default: str = ""):
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY", "django-insecure-change-me-in-production"
 )
 
 DEBUG = os.environ.get("DEBUG", "true").lower() != "false"
 
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = _csv_env("ALLOWED_HOSTS", "127.0.0.1,localhost")
+CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS")
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
