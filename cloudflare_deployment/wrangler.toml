@@ -5,9 +5,11 @@ compatibility_date = "2026-02-09"
 [assets]
 directory = "./public"
 binding = "ASSETS"
+run_worker_first = true
 
 [vars]
 DEBUG = "true"
+HOME_WALLET_ADDRESS = "5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft"
 # Set these in production via `wrangler secret put` / dashboard:
 # CHALLENGE_SECRET
 # HOME_WALLET_ADDRESS
