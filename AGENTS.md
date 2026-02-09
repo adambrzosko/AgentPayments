@@ -17,7 +17,8 @@ This file defines how coding agents should work in this repository.
   - `sdk/node/`: **Implementation #1 (done)**, Express-first package (`@agentpayments/node`).
   - `sdk/edge/`: **Implementation #2 (done)**, fetch-runtime package (`@agentpayments/edge`) with Cloudflare/Netlify/Vercel adapters.
   - `sdk/python/`: **Implementation #3 (done)**, python package (`agentpayments-python`) with Django/FastAPI/Flask adapters.
-  - Next targets: next package, proxy adapter.
+  - `sdk/next/`: **Implementation #4 (done)**, Next.js wrapper package (`@agentpayments/next`).
+  - Next target: proxy adapter.
 - `django_deployment/`: Django integration demo (thin wrapper).
 - `netlify_deployment/`: Static + Netlify edge deployment demo (thin wrapper).
 - `cloudflare_deployment/`: Cloudflare Worker integration demo (thin wrapper).

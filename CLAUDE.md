@@ -21,7 +21,8 @@ Therefore:
   - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
   - `sdk/edge/`: **Implementation #2 complete** (`@agentpayments/edge`, Cloudflare/Netlify/Vercel adapters).
   - `sdk/python/`: **Implementation #3 complete** (`agentpayments-python`, Django/FastAPI/Flask adapters).
-  - Planned: `@agentpayments/next`, proxy adapter.
+  - `sdk/next/`: **Implementation #4 complete** (`@agentpayments/next`, middleware wrapper).
+  - Planned: proxy adapter.
 - `django_deployment/`: Django integration demo.
 - `netlify_deployment/`: Netlify deployment files.
 - `cloudflare_deployment/`: Cloudflare Worker integration demo.
