@@ -114,8 +114,9 @@ def challenge_verify(request):
 
     safe_path = return_to if return_to.startswith("/") else "/"
     response = HttpResponseRedirect(safe_path)
-    forwarded_proto = (request.META.get("HTTP_X_FORWARDED_PROTO") or "").split(",")[0].strip().lower()
-    secure_cookie = forwarded_proto == "https" if forwarded_proto else request.is_secure()
+    # Temporary pragmatic default: do not mark challenge cookie Secure.
+    # This avoids HTTP challenge loops on raw-IP deployments without TLS.
+    secure_cookie = False
     response.set_cookie(
         COOKIE_NAME,
         make_cookie(secret),
