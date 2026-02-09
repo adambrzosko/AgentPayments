@@ -2,3 +2,11 @@
 .venv*/
 __pycache__/
 jsons/.test-keypair.json
+
+# JS/Next build artifacts
+node_modules/
+.next/
+.vercel/
+nextjs_deployment/node_modules/
+nextjs_deployment/.next/
+nextjs_deployment/.vercel/

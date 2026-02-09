@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "name": "AgentPayments",
+  "auth": {
+    "type": "api_key",
+    "header": "X-Agent-Key"
+  },
+  "payment": {
+    "chain": "solana",
+    "token": "USDC"
+  }
+}
