@@ -1,6 +1,6 @@
 # Next.js Deployment (Test Website)
 
-Demo Next.js app wired with local AgentPayments middleware.
+Demo Next.js app wired the same way a customer app should be: importing `@agentpayments/next`.
 
 ## Run locally
 ```bash
@@ -17,3 +17,5 @@ Set these env vars in project settings:
 - SOLANA_RPC_URL (optional)
 - USDC_MINT (optional)
 - DEBUG
+
+For this monorepo setup, deploy with project root set to `next_implementation` from the repo root (so `file:../sdk/next` resolves during install).

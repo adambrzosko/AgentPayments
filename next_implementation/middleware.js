@@ -1,4 +1,4 @@
-import { createNextMiddleware } from './lib/next-gate';
+import { createNextMiddleware } from '@agentpayments/next';
 
 export default createNextMiddleware({
   publicPathAllowlist: ['/favicon.ico'],
