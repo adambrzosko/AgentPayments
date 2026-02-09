@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -6,6 +7,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = BASE_DIR.parent
+SDK_PYTHON_PATH = REPO_ROOT / "sdk" / "python"
+if str(SDK_PYTHON_PATH) not in sys.path:
+    sys.path.insert(0, str(SDK_PYTHON_PATH))
 
 def _csv_env(name: str, default: str = ""):
     raw = os.environ.get(name, default)

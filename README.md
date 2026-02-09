@@ -12,9 +12,10 @@ There are three separate test deployments (nodejs, django, netlify/typescript + 
 These exist to prove the same shared gate can be integrated across common web architectures.
 
 - `cloudflare_deployment/`: Worker wrapper + static assets.
-- `nodejs_deployment/`: Express integration demo.
-- `django_deployment/`: Django integration demo.
-- `netlify_deployment/`: Netlify variant.
+- `django_deployment/`: Django wrapper + demo static files.
+- `netlify_deployment/`: Netlify edge wrapper + demo static files.
+- `nodejs_deployment/`: Express integration demo (to be refactored to shared sdk style).
+- `sdk/`: Shared gate logic used by deployment wrappers (JS/TS + Python).
 
 ## Django (Oracle)
 For Oracle Always Free VM deployment of the Django app, see `django_deployment/DEPLOY_ORACLE.md`.
