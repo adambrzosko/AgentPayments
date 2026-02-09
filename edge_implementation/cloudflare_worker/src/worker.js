@@ -1,4 +1,4 @@
-import { createAgentPaymentsWorker } from '../../sdk/edge/cloudflare.js';
+import { createAgentPaymentsWorker } from '../../../sdk/edge/cloudflare.js';
 
 // Stripe-style integration target:
 // this file should stay as tiny wiring code + config.

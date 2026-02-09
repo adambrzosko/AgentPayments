@@ -24,7 +24,7 @@ from solders.transaction import Transaction
 DEVNET_RPC = "https://api.devnet.solana.com"
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 BOT_WALLET_FILE = Path(__file__).resolve().parent / "bot-wallet.json"
-DEFAULT_HTML = Path(__file__).resolve().parent / "python_implementation/django" / "static" / "index.html"
+DEFAULT_HTML = Path(__file__).resolve().parent.parent / "python_implementation/django" / "static" / "index.html"
 
 
 async def launch_and_parse_page(playwright, target_url: str):

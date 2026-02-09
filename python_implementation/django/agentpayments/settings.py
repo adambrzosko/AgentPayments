@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-REPO_ROOT = BASE_DIR.parent
+REPO_ROOT = BASE_DIR.parent.parent
 SDK_PYTHON_PATH = REPO_ROOT / "sdk" / "python"
 if str(SDK_PYTHON_PATH) not in sys.path:
     sys.path.insert(0, str(SDK_PYTHON_PATH))
