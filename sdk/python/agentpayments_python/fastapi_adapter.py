@@ -1,3 +1,4 @@
+import hmac
 import json
 import time
 from urllib.parse import urlencode
@@ -12,10 +13,21 @@ from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, verify_payment_on_chain
 
+MAX_NONCE_LENGTH = 128
+MAX_RETURN_TO_LENGTH = 2048
+MAX_FP_LENGTH = 128
+
 
 class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url: str = "", usdc_mint: str = ""):
         super().__init__(app)
+        if challenge_secret == "default-secret-change-me":
+            import logging
+            logger = logging.getLogger("agentpayments")
+            if debug:
+                logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
+            else:
+                raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
         self.challenge_secret = challenge_secret
         self.home_wallet_address = home_wallet_address
         self.debug = debug
@@ -63,9 +75,9 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
 
 async def challenge_verify_endpoint(request: Request, challenge_secret: str):
     form = await request.form()
-    nonce = str(form.get("nonce", ""))
-    return_to = str(form.get("return_to", "/"))
-    fp = str(form.get("fp", ""))
+    nonce = str(form.get("nonce", ""))[:MAX_NONCE_LENGTH]
+    return_to = str(form.get("return_to", "/"))[:MAX_RETURN_TO_LENGTH]
+    fp = str(form.get("fp", ""))[:MAX_FP_LENGTH]
 
     i = nonce.find(".")
     if i == -1 or not fp or len(fp) < 10:
@@ -81,7 +93,7 @@ async def challenge_verify_endpoint(request: Request, challenge_secret: str):
     if int(time.time() * 1000) - ts > 300000:
         return JSONResponse({"error": "forbidden", "message": "Challenge expired."}, status_code=403)
 
-    if nonce_sig != hmac_sign(f"nonce:{nonce_ts}", challenge_secret):
+    if not hmac.compare_digest(nonce_sig, hmac_sign(f"nonce:{nonce_ts}", challenge_secret)):
         return JSONResponse({"error": "forbidden", "message": "Invalid challenge."}, status_code=403)
 
     safe_path = return_to if return_to.startswith("/") else "/"

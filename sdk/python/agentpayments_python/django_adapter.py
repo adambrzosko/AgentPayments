@@ -1,3 +1,4 @@
+import hmac
 import time
 
 from django.conf import settings
@@ -11,6 +12,10 @@ from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, verify_payment_on_chain
 
+MAX_NONCE_LENGTH = 128
+MAX_RETURN_TO_LENGTH = 2048
+MAX_FP_LENGTH = 128
+
 
 class GateMiddleware:
     def __init__(self, get_response):
@@ -18,6 +23,13 @@ class GateMiddleware:
 
     def __call__(self, request):
         secret = settings.CHALLENGE_SECRET
+        if secret == "default-secret-change-me":
+            import logging
+            logger = logging.getLogger("agentpayments")
+            if settings.DEBUG:
+                logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
+            else:
+                raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
         wallet_address = settings.HOME_WALLET_ADDRESS
         debug = settings.DEBUG
         rpc_url = settings.SOLANA_RPC_URL or (RPC_DEVNET if debug else RPC_MAINNET)
@@ -90,9 +102,9 @@ class GateMiddleware:
 @require_POST
 def challenge_verify(request):
     secret = settings.CHALLENGE_SECRET
-    nonce = request.POST.get("nonce", "")
-    return_to = request.POST.get("return_to", "/")
-    fp = request.POST.get("fp", "")
+    nonce = request.POST.get("nonce", "")[:MAX_NONCE_LENGTH]
+    return_to = request.POST.get("return_to", "/")[:MAX_RETURN_TO_LENGTH]
+    fp = request.POST.get("fp", "")[:MAX_FP_LENGTH]
 
     i = nonce.find(".")
     if i == -1 or not fp or len(fp) < 10:
@@ -109,14 +121,12 @@ def challenge_verify(request):
         return JsonResponse({"error": "forbidden", "message": "Challenge expired. Reload the page."}, status=403)
 
     expected_sig = hmac_sign(f"nonce:{nonce_ts}", secret)
-    if nonce_sig != expected_sig:
+    if not hmac.compare_digest(nonce_sig, expected_sig):
         return JsonResponse({"error": "forbidden", "message": "Invalid challenge."}, status=403)
 
     safe_path = return_to if return_to.startswith("/") else "/"
     response = HttpResponseRedirect(safe_path)
-    # Temporary pragmatic default: do not mark challenge cookie Secure.
-    # This avoids HTTP challenge loops on raw-IP deployments without TLS.
-    secure_cookie = False
+    secure_cookie = request.is_secure()
     response.set_cookie(
         COOKIE_NAME,
         make_cookie(secret),

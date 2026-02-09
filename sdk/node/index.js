@@ -9,6 +9,10 @@ const RPC_DEVNET = 'https://api.devnet.solana.com';
 const RPC_MAINNET = 'https://api.mainnet-beta.solana.com';
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MIN_PAYMENT = 0.01;
+const MAX_KEY_LENGTH = 64;
+const MAX_NONCE_LENGTH = 128;
+const MAX_RETURN_TO_LENGTH = 2048;
+const MAX_FP_LENGTH = 128;
 
 function hmacSign(data, secret) {
   return crypto.createHmac('sha256', secret).update(data).digest('hex');
@@ -21,7 +25,7 @@ function generateAgentKey(secret) {
 }
 
 function isValidAgentKey(key, secret) {
-  if (!key || !key.startsWith(KEY_PREFIX)) return false;
+  if (!key || key.length > MAX_KEY_LENGTH || !key.startsWith(KEY_PREFIX)) return false;
   const rest = key.slice(KEY_PREFIX.length);
   const underscoreIndex = rest.indexOf('_');
   if (underscoreIndex === -1) return false;
@@ -126,7 +130,8 @@ function isValidCookie(req, secret) {
   if (Number.isNaN(ts) || Date.now() - ts > COOKIE_MAX_AGE * 1000) return false;
 
   const expected = hmacSign(timestamp, secret);
-  return signature === expected;
+  if (signature.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
 function isPublicPath(pathname) {
@@ -183,6 +188,13 @@ function agentPaymentsGate(config = {}) {
   } = config;
 
   const secret = challengeSecret || 'default-secret-change-me';
+  if (secret === 'default-secret-change-me') {
+    if (debug) {
+      console.warn('[gate] WARNING: Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
+    } else {
+      throw new Error('[gate] CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.');
+    }
+  }
   const walletAddress = homeWalletAddress || '';
   const rpcUrl = solanaRpcUrl || (debug ? RPC_DEVNET : RPC_MAINNET);
   const mint = usdcMint || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
@@ -194,9 +206,9 @@ function agentPaymentsGate(config = {}) {
     if (isPublicPath(pathname)) return next();
 
     if (pathname === '/__challenge/verify' && req.method === 'POST') {
-      const nonce = req.body?.nonce || req.query?.nonce || '';
-      const returnTo = req.body?.return_to || req.query?.return_to || '/';
-      const fp = req.body?.fp || req.query?.fp || '';
+      const nonce = (req.body?.nonce || req.query?.nonce || '').slice(0, MAX_NONCE_LENGTH);
+      const returnTo = (req.body?.return_to || req.query?.return_to || '/').slice(0, MAX_RETURN_TO_LENGTH);
+      const fp = (req.body?.fp || req.query?.fp || '').slice(0, MAX_FP_LENGTH);
 
       const dotIndex = nonce.indexOf('.');
       if (dotIndex === -1 || !fp || fp.length < 10) {
@@ -211,7 +223,7 @@ function agentPaymentsGate(config = {}) {
       }
 
       const expectedSig = hmacSign(`nonce:${nonceTs}`, secret);
-      if (nonceSig !== expectedSig) {
+      if (nonceSig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(nonceSig), Buffer.from(expectedSig))) {
         return json(res, 403, { error: 'forbidden', message: 'Invalid challenge.' });
       }
 

@@ -3,6 +3,7 @@ import hmac
 import uuid
 
 KEY_PREFIX = "ag_"
+MAX_KEY_LENGTH = 64
 
 
 def hmac_sign(data: str, secret: str) -> str:
@@ -16,7 +17,7 @@ def generate_agent_key(secret: str) -> str:
 
 
 def is_valid_agent_key(key: str, secret: str) -> bool:
-    if not key.startswith(KEY_PREFIX):
+    if not key or len(key) > MAX_KEY_LENGTH or not key.startswith(KEY_PREFIX):
         return False
     rest = key[len(KEY_PREFIX):]
     i = rest.find("_")
