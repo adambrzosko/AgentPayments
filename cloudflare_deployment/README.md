@@ -1,10 +1,17 @@
 # Cloudflare Deployment
 
-Cloudflare Workers + static assets deployment for the AgentPayments gate.
+Cloudflare Workers + static assets deployment demo for AgentPayments.
+
+## Integration model
+This folder is intentionally thin.
+Core gate logic is imported from `../sdk/cloudflare-gate.js`.
+
+That keeps this deployment Stripe-style: small wrapper + config, with shared logic centralized.
 
 ## Files
 - `wrangler.toml`: Worker config + static asset binding.
-- `src/worker.js`: Gate middleware logic (ported from Netlify edge function).
+- `src/worker.js`: Thin wrapper that imports shared gate logic.
+- `../sdk/cloudflare-gate.js`: Shared Cloudflare gate implementation.
 - `public/`: Static site files served via Workers Assets.
 
 ## Local Dev
@@ -21,7 +28,7 @@ Cloudflare Workers + static assets deployment for the AgentPayments gate.
 - `npm run deploy`
 
 ## Notes
-- `netlify_deployment/` is left unchanged.
 - Public paths bypass gate:
   - `/robots.txt`
   - `/.well-known/agent-access.json`
+- `wrangler.toml` uses `run_worker_first = true` so gate logic runs before static assets.

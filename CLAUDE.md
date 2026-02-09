@@ -3,16 +3,26 @@
 ## Scope
 Instructions for Claude-based coding agents working in this repo.
 
-## Default Target
-- Treat `django_deployment/` as the active Django codebase.
-- Treat `nodejs_deployment/` and `netlify_deployment/` as parallel demo deployments.
+## Product Intent
+Treat this as a Stripe-style developer product.
+
+Target developer experience:
+1. Install/import AgentPayments package
+2. Add a couple of lines in app bootstrap/middleware
+3. Ship
+
+Therefore:
+- Shared gate logic belongs in central package-style code (`sdk/` for now).
+- Deployment folders should only contain integration glue, config, and demo assets.
+- Do not duplicate or fork core gate logic inside deployment folders unless explicitly asked.
 
 ## Repo Map
-- `django_deployment/`: Main Django app and middleware payment gate.
+- `sdk/`: Shared AgentPayments gate implementation (source of truth for shared behavior).
+- `django_deployment/`: Django integration demo.
 - `netlify_deployment/`: Netlify deployment files.
-- `nodejs_deployment/`: Node/Express demo deployment.
+- `cloudflare_deployment/`: Cloudflare Worker integration demo.
+- `nodejs_deployment/`: Node/Express integration demo.
 - `scripts/`: Demo and verification scripts.
-- Root helper scripts: `setup_wallet.py`, `bot_visitor.py`.
 
 ## Expectations
 - Keep diffs focused and avoid unrelated refactors.
@@ -23,6 +33,8 @@ Instructions for Claude-based coding agents working in this repo.
 ## Verification
 - After Django edits, run:
   - `python django_deployment/manage.py check`
+- After Cloudflare integration changes, run:
+  - `npx wrangler deploy` from `cloudflare_deployment/` when requested
 - If behavior changed, add or update a small test where practical.
 - Report any command you could not run and why.
 
