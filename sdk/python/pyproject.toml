@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentpayments-python"
+version = "0.1.0"
+description = "AgentPayments middleware/adapters for Python web frameworks"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+django = ["Django>=5.0"]
+fastapi = ["fastapi>=0.110", "starlette>=0.37"]
+flask = ["flask>=3.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentpayments_python*"]

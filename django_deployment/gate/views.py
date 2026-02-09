@@ -3,7 +3,7 @@ from pathlib import Path
 from django.conf import settings
 from django.http import HttpResponse
 
-from agentpayments_gate.django_gate import challenge_verify
+from agentpayments_python.django_adapter import challenge_verify
 
 STATIC_DIR = Path(settings.BASE_DIR) / "static"
 

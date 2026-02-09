@@ -1,1 +1,1 @@
-from agentpayments_gate.django_gate import GateMiddleware
+from agentpayments_python.django_adapter import GateMiddleware

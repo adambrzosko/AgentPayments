@@ -20,7 +20,8 @@ Therefore:
 - `sdk/`: Shared AgentPayments gate implementation (source of truth for shared behavior).
   - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
   - `sdk/edge/`: **Implementation #2 complete** (`@agentpayments/edge`, Cloudflare/Netlify/Vercel adapters).
-  - Planned: `agentpayments-python`, `@agentpayments/next`, proxy adapter.
+  - `sdk/python/`: **Implementation #3 complete** (`agentpayments-python`, Django/FastAPI/Flask adapters).
+  - Planned: `@agentpayments/next`, proxy adapter.
 - `django_deployment/`: Django integration demo.
 - `netlify_deployment/`: Netlify deployment files.
 - `cloudflare_deployment/`: Cloudflare Worker integration demo.

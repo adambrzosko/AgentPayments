@@ -18,11 +18,12 @@ These exist to prove the same shared gate can be integrated across common web ar
 - `sdk/`: Shared gate logic used by deployment wrappers (JS/TS + Python).
   - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
   - `sdk/edge/`: **Implementation #2 complete** (`@agentpayments/edge`, Cloudflare/Netlify/Vercel adapters).
+  - `sdk/python/`: **Implementation #3 complete** (`agentpayments-python`, Django/FastAPI/Flask adapters).
 
 ## SDK roadmap (keep this clear)
 1. ✅ `@agentpayments/node` (Express middleware; first shipping target)
 2. ✅ `@agentpayments/edge` (shared fetch runtime + Cloudflare/Netlify/Vercel adapters)
-3. ⏳ `agentpayments-python` (Django/FastAPI/Flask adapters)
+3. ✅ `agentpayments-python` (Django/FastAPI/Flask adapters)
 4. ⏳ `@agentpayments/next` (first-class Next.js middleware + route helper)
 5. ⏳ Proxy adapter (Nginx/Envoy style enforcement)
 
