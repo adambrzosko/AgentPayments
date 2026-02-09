@@ -21,4 +21,6 @@ const { agentPaymentsGate } = require('@agentpayments/node');
 app.use(agentPaymentsGate(config));
 ```
 
-In this repo, `./lib/agentpayments-middleware` is a pass-through stub so the demo runs without publishing the package first.
+In this repo, `./lib/agentpayments-middleware` is a thin wrapper that imports shared gate logic from `../sdk/node-gate.js`.
+
+Deployment folder stays minimal; shared bot-blocking logic lives in `sdk/`.

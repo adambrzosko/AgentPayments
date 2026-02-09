@@ -13,6 +13,7 @@ const port = Number.isFinite(parsedPort) ? parsedPort : 3000;
 const host = process.env.HOST || '127.0.0.1';
 
 app.disable('x-powered-by');
+app.use(express.urlencoded({ extended: false }));
 
 // In a real customer app this import would come from the published package, e.g.:
 // const { agentPaymentsGate } = require('@agentpayments/node');
