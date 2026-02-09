@@ -14,8 +14,18 @@ These exist to prove the same shared gate can be integrated across common web ar
 - `cloudflare_deployment/`: Worker wrapper + static assets.
 - `django_deployment/`: Django wrapper + demo static files.
 - `netlify_deployment/`: Netlify edge wrapper + demo static files.
-- `nodejs_deployment/`: Express integration demo (to be refactored to shared sdk style).
+- `nodejs_deployment/`: Express integration demo (thin wrapper over `@agentpayments/node` local package).
 - `sdk/`: Shared gate logic used by deployment wrappers (JS/TS + Python).
+  - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
+
+## SDK roadmap (keep this clear)
+1. ✅ `@agentpayments/node` (Express middleware; first shipping target)
+2. ⏳ `@agentpayments/edge` (shared fetch runtime for Cloudflare/Vercel/Netlify)
+3. ⏳ `agentpayments-python` (Django/FastAPI/Flask adapters)
+4. ⏳ `@agentpayments/next` (first-class Next.js middleware + route helper)
+5. ⏳ Proxy adapter (Nginx/Envoy style enforcement)
+
+Rule: deployment folders stay thin; core gate behavior belongs in `sdk/` packages.
 
 ## Django (Oracle)
 For Oracle Always Free VM deployment of the Django app, see `django_deployment/DEPLOY_ORACLE.md`.

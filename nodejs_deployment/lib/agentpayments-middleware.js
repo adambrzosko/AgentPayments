@@ -1,1 +1,1 @@
-module.exports = require('../../sdk/node-gate');
+module.exports = require('../../sdk/node');

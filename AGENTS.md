@@ -13,11 +13,13 @@ This file defines how coding agents should work in this repository.
 - Deployment folders should be thin adapters/wrappers only.
 
 ## Project Layout
-- `sdk/`: Shared gate logic intended to become a publishable library.
-- `django_deployment/`: Django integration demo.
-- `netlify_deployment/`: Static + Netlify edge deployment demo.
-- `cloudflare_deployment/`: Cloudflare Worker integration demo.
-- `nodejs_deployment/`: Node/Express integration demo.
+- `sdk/`: Shared gate logic intended to become publishable libraries.
+  - `sdk/node/`: **Implementation #1 (done)**, Express-first package (`@agentpayments/node`).
+  - Next targets: edge runtime package, python package, next package, proxy adapter.
+- `django_deployment/`: Django integration demo (thin wrapper).
+- `netlify_deployment/`: Static + Netlify edge deployment demo (thin wrapper).
+- `cloudflare_deployment/`: Cloudflare Worker integration demo (thin wrapper).
+- `nodejs_deployment/`: Node/Express integration demo (thin wrapper).
 - `scripts/`: Utility and demo scripts.
 
 ## Working Rules

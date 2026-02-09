@@ -1,0 +1,10 @@
+{
+  "name": "@agentpayments/node",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  }
+}

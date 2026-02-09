@@ -21,6 +21,6 @@ const { agentPaymentsGate } = require('@agentpayments/node');
 app.use(agentPaymentsGate(config));
 ```
 
-In this repo, `./lib/agentpayments-middleware` is a thin wrapper that imports shared gate logic from `../sdk/node-gate.js`.
+In this repo, `./lib/agentpayments-middleware` is a thin wrapper that imports shared gate logic from local package folder `../sdk/node` (representing `@agentpayments/node`).
 
 Deployment folder stays minimal; shared bot-blocking logic lives in `sdk/`.

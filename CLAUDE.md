@@ -18,6 +18,8 @@ Therefore:
 
 ## Repo Map
 - `sdk/`: Shared AgentPayments gate implementation (source of truth for shared behavior).
+  - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
+  - Planned: `@agentpayments/edge`, `agentpayments-python`, `@agentpayments/next`, proxy adapter.
 - `django_deployment/`: Django integration demo.
 - `netlify_deployment/`: Netlify deployment files.
 - `cloudflare_deployment/`: Cloudflare Worker integration demo.
