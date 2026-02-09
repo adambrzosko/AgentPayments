@@ -84,6 +84,57 @@ curl -i http://<server-ip>/
 curl -i http://<server-ip>/.well-known/agent-access.json
 ```
 
-## Optional: HTTPS (recommended)
+## HTTPS on Oracle (recommended)
 
-Use Caddy or Certbot + nginx once you point a domain at the VM.
+You need a real domain pointed at the VM public IP (Let's Encrypt won't issue trusted certs for raw IPs).
+
+### 1) Point DNS
+- Create an `A` record, e.g. `pay.yourdomain.com -> <vm-public-ip>`
+- Wait for propagation.
+
+### 2) Update nginx server_name
+Edit `/etc/nginx/sites-available/agentpayments` and replace `server_name _;` with your domain:
+
+```nginx
+server_name pay.yourdomain.com;
+```
+
+Then reload nginx:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 3) Issue certificate with Certbot
+
+```bash
+sudo apt update
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d pay.yourdomain.com --redirect -m you@example.com --agree-tos --no-eff-email
+```
+
+This will:
+- install TLS certs
+- add HTTPS server block(s)
+- auto-redirect HTTP -> HTTPS
+
+### 4) Confirm auto-renew
+
+```bash
+sudo systemctl status certbot.timer --no-pager
+sudo certbot renew --dry-run
+```
+
+### 5) Django env update
+Set CSRF trusted origins to HTTPS origin in `django_deployment/.env`:
+
+```dotenv
+CSRF_TRUSTED_ORIGINS=https://pay.yourdomain.com
+```
+
+Then restart app service:
+
+```bash
+sudo systemctl restart agentpayments
+```

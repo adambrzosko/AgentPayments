@@ -114,5 +114,14 @@ def challenge_verify(request):
 
     safe_path = return_to if return_to.startswith("/") else "/"
     response = HttpResponseRedirect(safe_path)
-    response.set_cookie(COOKIE_NAME, make_cookie(secret), max_age=COOKIE_MAX_AGE, path="/", httponly=True, secure=True, samesite="Lax")
+    secure_cookie = request.is_secure()
+    response.set_cookie(
+        COOKIE_NAME,
+        make_cookie(secret),
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+        httponly=True,
+        secure=secure_cookie,
+        samesite="Lax",
+    )
     return response
