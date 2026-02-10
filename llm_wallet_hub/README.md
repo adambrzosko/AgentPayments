@@ -21,6 +21,9 @@ cp .env.example .env
 # set MASTER_KEY
 npm run dev
 # open http://localhost:8787
+
+# run tests
+npm test
 ```
 
 ## Core endpoints
@@ -32,14 +35,18 @@ npm run dev
 - `POST /api/tool/pay` (header `x-wallet-tool-key`)
 - `GET /api/tool/balance` (header `x-wallet-tool-key`)
 
-## Security model (MVP)
+## Security model (hardened MVP)
 - Passwords: `scrypt`
-- Wallet secret key: encrypted (AES-256-GCM) under `MASTER_KEY`
-- Tool key required for payment endpoints
+- Wallet secret key: encrypted (AES-256-GCM) under `MASTER_KEY` (required, min 32 chars)
+- Session tokens + API keys stored hashed (SHA-256)
+- API key raw value shown once at creation
+- Rate limits on auth and payment endpoints
+- Input validation for email, Solana addresses, numeric limits
 - Hard policy checks:
   - max per payment
   - daily cap
   - optional recipient allowlist
+- Optional idempotency via `x-idempotency-key` on `/api/tool/pay`
 
 ## Known gaps before production
 - No MFA / no email verification
