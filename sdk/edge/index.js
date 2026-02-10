@@ -1,11 +1,18 @@
-import constants from '../constants.json' with { type: 'json' };
-const {
-  COOKIE_NAME, COOKIE_MAX_AGE, KEY_PREFIX,
-  USDC_MINT_DEVNET, USDC_MINT_MAINNET,
-  RPC_DEVNET, RPC_MAINNET,
-  MEMO_PROGRAM, MIN_PAYMENT,
-  MAX_KEY_LENGTH, MAX_NONCE_LENGTH, MAX_RETURN_TO_LENGTH, MAX_FP_LENGTH,
-} = constants;
+// Values sourced from sdk/constants.json (canonical). Inlined here because JSON
+// import syntax differs across Deno (Netlify), Cloudflare Workers, and Vercel Edge.
+const COOKIE_NAME = '__agp_verified';
+const COOKIE_MAX_AGE = 86400;
+const KEY_PREFIX = 'ag_';
+const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const RPC_DEVNET = 'https://api.devnet.solana.com';
+const RPC_MAINNET = 'https://api.mainnet-beta.solana.com';
+const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+const MIN_PAYMENT = 0.01;
+const MAX_KEY_LENGTH = 64;
+const MAX_NONCE_LENGTH = 128;
+const MAX_RETURN_TO_LENGTH = 2048;
+const MAX_FP_LENGTH = 128;
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const PAYMENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const PAYMENT_CACHE_MAX = 1000;
