@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Wallet Hub (Devnet)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    input, button, textarea, select { padding: 8px; margin: 4px 0; width: 100%; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    code { background: #f7f7f7; padding: 2px 6px; border-radius: 6px; }
+    .muted { color: #666; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>LLM Wallet Hub (Devnet MVP)</h1>
+  <p class="muted">Create wallet, fund from external wallet, issue tool key, paste prompt into GPT/Claude/Gemini.</p>
+
+  <div class="card">
+    <h3>Signup / Login</h3>
+    <div class="row">
+      <div>
+        <input id="email" placeholder="email" />
+      </div>
+      <div>
+        <input id="password" type="password" placeholder="password (min 8 chars)" />
+      </div>
+    </div>
+    <div class="row">
+      <button onclick="signup()">Signup</button>
+      <button onclick="login()">Login</button>
+    </div>
+    <p>Session: <code id="token">none</code></p>
+  </div>
+
+  <div class="card">
+    <h3>Wallet</h3>
+    <button onclick="loadMe()">Refresh Wallet</button>
+    <pre id="me">not loaded</pre>
+    <p class="muted">Fund this wallet by sending SOL on devnet from another wallet to the walletAddress above.</p>
+  </div>
+
+  <div class="card">
+    <h3>Create LLM Tool Key</h3>
+    <div class="row">
+      <input id="keyName" placeholder="Key name" value="gpt-key" />
+      <input id="maxSolPerPayment" type="number" step="0.001" value="0.01" />
+    </div>
+    <div class="row">
+      <input id="dailySolCap" type="number" step="0.001" value="0.05" />
+      <input id="allowlist" placeholder="Allowlist recipients (comma-separated, optional)" />
+    </div>
+    <button onclick="createKey()">Create Key</button>
+    <pre id="newKey">none</pre>
+  </div>
+
+  <div class="card">
+    <h3>System Prompt</h3>
+    <select id="model">
+      <option value="gpt">GPT</option>
+      <option value="claude">Claude</option>
+      <option value="gemini">Gemini</option>
+    </select>
+    <button onclick="loadPrompt()">Generate Prompt</button>
+    <textarea id="prompt" rows="16"></textarea>
+  </div>
+
+<script>
+let sessionToken = null;
+
+function headers() {
+  return {
+    'Content-Type': 'application/json',
+    ...(sessionToken ? { 'x-session-token': sessionToken } : {})
+  };
+}
+
+async function signup() {
+  const r = await fetch('/api/signup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email.value, password: password.value })
+  });
+  const data = await r.json();
+  if (data.sessionToken) {
+    sessionToken = data.sessionToken;
+    token.textContent = sessionToken;
+  }
+  me.textContent = JSON.stringify(data, null, 2);
+}
+
+async function login() {
+  const r = await fetch('/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email.value, password: password.value })
+  });
+  const data = await r.json();
+  if (data.sessionToken) {
+    sessionToken = data.sessionToken;
+    token.textContent = sessionToken;
+  }
+  me.textContent = JSON.stringify(data, null, 2);
+}
+
+async function loadMe() {
+  const r = await fetch('/api/me', { headers: headers() });
+  const data = await r.json();
+  me.textContent = JSON.stringify(data, null, 2);
+}
+
+async function createKey() {
+  const allowlistedRecipients = allowlist.value
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const r = await fetch('/api/keys', {
+    method: 'POST', headers: headers(),
+    body: JSON.stringify({
+      name: keyName.value,
+      maxSolPerPayment: Number(maxSolPerPayment.value),
+      dailySolCap: Number(dailySolCap.value),
+      allowlistedRecipients
+    })
+  });
+  const data = await r.json();
+  newKey.textContent = JSON.stringify(data, null, 2);
+}
+
+async function loadPrompt() {
+  const r = await fetch(`/api/system-prompt?model=${encodeURIComponent(model.value)}`, { headers: headers() });
+  const data = await r.json();
+  prompt.value = data.prompt || JSON.stringify(data, null, 2);
+}
+</script>
+</body>
+</html>
