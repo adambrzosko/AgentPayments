@@ -1,3 +1,4 @@
+import hmac
 import time
 
 from flask import jsonify, make_response, redirect, request
@@ -8,8 +9,19 @@ from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, verify_payment_on_chain
 
+MAX_NONCE_LENGTH = 128
+MAX_RETURN_TO_LENGTH = 2048
+MAX_FP_LENGTH = 128
+
 
 def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url: str = "", usdc_mint: str = ""):
+    if challenge_secret == "default-secret-change-me":
+        import logging
+        logger = logging.getLogger("agentpayments")
+        if debug:
+            logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
+        else:
+            raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
     rpc_url = solana_rpc_url or (RPC_DEVNET if debug else RPC_MAINNET)
     mint = usdc_mint or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
 
@@ -45,9 +57,9 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
 
     @app.post("/__challenge/verify")
     def _verify():
-        nonce = request.form.get("nonce", "")
-        return_to = request.form.get("return_to", "/")
-        fp = request.form.get("fp", "")
+        nonce = request.form.get("nonce", "")[:MAX_NONCE_LENGTH]
+        return_to = request.form.get("return_to", "/")[:MAX_RETURN_TO_LENGTH]
+        fp = request.form.get("fp", "")[:MAX_FP_LENGTH]
         i = nonce.find(".")
         if i == -1 or not fp or len(fp) < 10:
             return jsonify({"error": "forbidden", "message": "Challenge verification failed."}), 403
@@ -59,7 +71,7 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
             return jsonify({"error": "forbidden", "message": "Challenge verification failed."}), 403
         if int(time.time() * 1000) - ts > 300000:
             return jsonify({"error": "forbidden", "message": "Challenge expired."}), 403
-        if nonce_sig != hmac_sign(f"nonce:{nonce_ts}", challenge_secret):
+        if not hmac.compare_digest(nonce_sig, hmac_sign(f"nonce:{nonce_ts}", challenge_secret)):
             return jsonify({"error": "forbidden", "message": "Invalid challenge."}), 403
         safe = return_to if return_to.startswith("/") else "/"
         resp = redirect(safe, code=302)

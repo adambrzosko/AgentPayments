@@ -7,11 +7,30 @@ const RPC_DEVNET = 'https://api.devnet.solana.com';
 const RPC_MAINNET = 'https://api.mainnet-beta.solana.com';
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MIN_PAYMENT = 0.01;
+const MAX_KEY_LENGTH = 64;
+const MAX_NONCE_LENGTH = 128;
+const MAX_RETURN_TO_LENGTH = 2048;
+const MAX_FP_LENGTH = 128;
 
 async function hmacSign(data, secret) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode('timing-safe-cmp'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const [macA, macB] = await Promise.all([
+    crypto.subtle.sign('HMAC', key, enc.encode(a)),
+    crypto.subtle.sign('HMAC', key, enc.encode(b)),
+  ]);
+  const viewA = new Uint8Array(macA);
+  const viewB = new Uint8Array(macB);
+  let result = 0;
+  for (let i = 0; i < viewA.length; i++) result |= viewA[i] ^ viewB[i];
+  return result === 0;
 }
 
 async function generateAgentKey(secret) {
@@ -21,14 +40,14 @@ async function generateAgentKey(secret) {
 }
 
 async function isValidAgentKey(key, secret) {
-  if (!key || !key.startsWith(KEY_PREFIX)) return false;
+  if (!key || key.length > MAX_KEY_LENGTH || !key.startsWith(KEY_PREFIX)) return false;
   const rest = key.slice(KEY_PREFIX.length);
   const underscoreIndex = rest.indexOf('_');
   if (underscoreIndex === -1) return false;
   const random = rest.slice(0, underscoreIndex);
   const sig = rest.slice(underscoreIndex + 1);
   const expected = await hmacSign(random, secret);
-  return sig === expected.slice(0, 16);
+  return timingSafeEqual(sig, expected.slice(0, 16));
 }
 
 async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
@@ -121,7 +140,7 @@ async function isValidCookie(request, secret) {
   const ts = Number.parseInt(timestamp, 10);
   if (Number.isNaN(ts) || Date.now() - ts > COOKIE_MAX_AGE * 1000) return false;
   const expected = await hmacSign(timestamp, secret);
-  return signature === expected;
+  return timingSafeEqual(signature, expected);
 }
 
 function isPublicPath(pathname, allowlist = []) {
@@ -164,6 +183,13 @@ export function createEdgeGate(options = {}) {
     const secret = effectiveEnv.CHALLENGE_SECRET || 'default-secret-change-me';
     const walletAddress = effectiveEnv.HOME_WALLET_ADDRESS || '';
     const debug = effectiveEnv.DEBUG !== 'false';
+    if (secret === 'default-secret-change-me') {
+      if (debug) {
+        console.warn('[gate] WARNING: Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
+      } else {
+        return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: insecure default secret.' }, 500);
+      }
+    }
     const rpcUrl = effectiveEnv.SOLANA_RPC_URL || (debug ? RPC_DEVNET : RPC_MAINNET);
     const usdcMint = effectiveEnv.USDC_MINT || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
 
@@ -173,9 +199,9 @@ export function createEdgeGate(options = {}) {
 
     if (url.pathname === '/__challenge/verify' && request.method === 'POST') {
       const formData = await request.formData();
-      const nonce = formData.get('nonce')?.toString() || '';
-      const returnTo = formData.get('return_to')?.toString() || '/';
-      const fp = formData.get('fp')?.toString() || '';
+      const nonce = (formData.get('nonce')?.toString() || '').slice(0, MAX_NONCE_LENGTH);
+      const returnTo = (formData.get('return_to')?.toString() || '/').slice(0, MAX_RETURN_TO_LENGTH);
+      const fp = (formData.get('fp')?.toString() || '').slice(0, MAX_FP_LENGTH);
 
       const dotIndex = nonce.indexOf('.');
       if (dotIndex === -1 || !fp || fp.length < 10) {
@@ -191,7 +217,7 @@ export function createEdgeGate(options = {}) {
       }
 
       const expectedSig = await hmacSign(`nonce:${nonceTs}`, secret);
-      if (nonceSig !== expectedSig) {
+      if (!(await timingSafeEqual(nonceSig, expectedSig))) {
         return jsonResponse({ error: 'forbidden', message: 'Invalid challenge.' }, 403);
       }
 
