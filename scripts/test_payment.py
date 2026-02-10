@@ -52,17 +52,21 @@ def load_env(path=".env"):
 
 
 def wait_for_confirmation(client, signature, label="transaction", max_wait=30):
-    """Poll until a transaction is confirmed."""
+    """Poll until a transaction is confirmed (with basic 429/backoff tolerance)."""
     print(f"   Waiting for {label} confirmation...", end="", flush=True)
     for _ in range(max_wait):
-        resp = client.get_signature_statuses([signature])
-        statuses = resp.value
-        if statuses and statuses[0] and statuses[0].confirmation_status:
-            status = str(statuses[0].confirmation_status)
-            if status in ("confirmed", "finalized"):
-                print(f" {status}")
-                return True
-        time.sleep(1)
+        try:
+            resp = client.get_signature_statuses([signature])
+            statuses = resp.value
+            if statuses and statuses[0] and statuses[0].confirmation_status:
+                status = str(statuses[0].confirmation_status)
+                if status in ("confirmed", "finalized"):
+                    print(f" {status}")
+                    return True
+        except Exception:
+            # Public RPCs are noisy/rate-limited; keep polling.
+            pass
+        time.sleep(2)
         print(".", end="", flush=True)
     print(" timeout")
     return False
