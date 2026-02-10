@@ -1,18 +1,70 @@
 const crypto = require('node:crypto');
+const {
+  COOKIE_NAME, COOKIE_MAX_AGE, KEY_PREFIX,
+  USDC_MINT_DEVNET, USDC_MINT_MAINNET,
+  RPC_DEVNET, RPC_MAINNET,
+  MEMO_PROGRAM, MIN_PAYMENT,
+  MAX_KEY_LENGTH, MAX_NONCE_LENGTH, MAX_RETURN_TO_LENGTH, MAX_FP_LENGTH,
+} = require('../constants.json');
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const PAYMENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const PAYMENT_CACHE_MAX = 1000;
 
-const COOKIE_NAME = '__agp_verified';
-const COOKIE_MAX_AGE = 86400;
-const KEY_PREFIX = 'ag_';
-const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
-const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const RPC_DEVNET = 'https://api.devnet.solana.com';
-const RPC_MAINNET = 'https://api.mainnet-beta.solana.com';
-const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-const MIN_PAYMENT = 0.01;
-const MAX_KEY_LENGTH = 64;
-const MAX_NONCE_LENGTH = 128;
-const MAX_RETURN_TO_LENGTH = 2048;
-const MAX_FP_LENGTH = 128;
+class PaymentCache {
+  constructor(ttl = PAYMENT_CACHE_TTL, maxSize = PAYMENT_CACHE_MAX) {
+    this.ttl = ttl;
+    this.maxSize = maxSize;
+    this.cache = new Map();
+  }
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.ts > this.ttl) { this.cache.delete(key); return undefined; }
+    return entry.value;
+  }
+  set(key, value) {
+    if (this.cache.size >= this.maxSize) {
+      const oldest = this.cache.keys().next().value;
+      this.cache.delete(oldest);
+    }
+    this.cache.set(key, { value, ts: Date.now() });
+  }
+}
+
+function gateLog(level, message, data = {}) {
+  const entry = JSON.stringify({ ts: new Date().toISOString(), level, component: 'agentpayments', message, ...data });
+  if (level === 'error') console.error(entry);
+  else if (level === 'warn') console.warn(entry);
+  else console.log(entry);
+}
+
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 20; // max requests per window per IP
+
+class RateLimiter {
+  constructor(windowMs = RATE_LIMIT_WINDOW, max = RATE_LIMIT_MAX) {
+    this.windowMs = windowMs;
+    this.max = max;
+    this.hits = new Map();
+  }
+  check(key) {
+    const now = Date.now();
+    const entry = this.hits.get(key);
+    if (!entry || now - entry.start > this.windowMs) {
+      this.hits.set(key, { start: now, count: 1 });
+      return true;
+    }
+    entry.count++;
+    if (entry.count > this.max) return false;
+    return true;
+  }
+  cleanup() {
+    const now = Date.now();
+    for (const [key, entry] of this.hits) {
+      if (now - entry.start > this.windowMs) this.hits.delete(key);
+    }
+  }
+}
 
 function hmacSign(data, secret) {
   return crypto.createHmac('sha256', secret).update(data).digest('hex');
@@ -105,7 +157,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
       if (hasMemo && hasPayment) return true;
     }
   } catch (error) {
-    console.error('[gate] Solana RPC error:', error);
+    gateLog('error', 'Solana RPC error', { error: error.message });
   }
 
   return false;
@@ -151,9 +203,15 @@ function challengePage(returnTo, nonce) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Just a moment...</title>
+  <title>Verifying your access...</title>
+  <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fafafa;color:#333}main{text-align:center;padding:2rem}.spinner{width:40px;height:40px;border:4px solid #e0e0e0;border-top-color:#333;border-radius:50%;animation:spin .8s linear infinite;margin:1rem auto}@keyframes spin{to{transform:rotate(360deg)}}</style>
 </head>
 <body>
+  <main role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Verifying your access&hellip;</p>
+    <noscript><p><strong>JavaScript is required to verify your access. Please enable JavaScript and reload this page.</strong></p></noscript>
+  </main>
   <script>
     (function() {
       if (navigator.webdriver) return;
@@ -190,15 +248,21 @@ function agentPaymentsGate(config = {}) {
   const secret = challengeSecret || 'default-secret-change-me';
   if (secret === 'default-secret-change-me') {
     if (debug) {
-      console.warn('[gate] WARNING: Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
+      gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
     } else {
       throw new Error('[gate] CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.');
     }
   }
   const walletAddress = homeWalletAddress || '';
+  if (walletAddress && !BASE58_RE.test(walletAddress)) {
+    throw new Error(`[gate] HOME_WALLET_ADDRESS "${walletAddress}" is not a valid Solana public key (expected 32-44 base58 characters).`);
+  }
   const rpcUrl = solanaRpcUrl || (debug ? RPC_DEVNET : RPC_MAINNET);
   const mint = usdcMint || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
   const network = debug ? 'devnet' : 'mainnet-beta';
+  const paymentCache = new PaymentCache();
+  const rateLimiter = new RateLimiter();
+  setInterval(() => rateLimiter.cleanup(), 60000).unref();
 
   return async function agentPaymentsGateMiddleware(req, res, next) {
     const pathname = req.path;
@@ -206,6 +270,10 @@ function agentPaymentsGate(config = {}) {
     if (isPublicPath(pathname)) return next();
 
     if (pathname === '/__challenge/verify' && req.method === 'POST') {
+      const clientIp = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown';
+      if (!rateLimiter.check(clientIp)) {
+        return json(res, 429, { error: 'rate_limited', message: 'Too many verification attempts. Please wait and try again.' });
+      }
       const nonce = (req.body?.nonce || req.query?.nonce || '').slice(0, MAX_NONCE_LENGTH);
       const returnTo = (req.body?.return_to || req.query?.return_to || '/').slice(0, MAX_RETURN_TO_LENGTH);
       const fp = (req.body?.fp || req.query?.fp || '').slice(0, MAX_FP_LENGTH);
@@ -274,7 +342,10 @@ function agentPaymentsGate(config = {}) {
         return json(res, 500, { error: 'server_error', message: 'Payment verification unavailable.' });
       }
 
+      const cached = paymentCache.get(agentKey);
+      if (cached === true) return next();
       const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, mint);
+      if (paid) paymentCache.set(agentKey, true);
       if (!paid) {
         return json(res, 402, {
           error: 'payment_required',

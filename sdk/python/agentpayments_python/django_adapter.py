@@ -10,11 +10,15 @@ from .challenge import challenge_html
 from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_cookie
 from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
-from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, verify_payment_on_chain
+from .ratelimit import _challenge_limiter
+from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, verify_payment_on_chain
 
-MAX_NONCE_LENGTH = 128
-MAX_RETURN_TO_LENGTH = 2048
-MAX_FP_LENGTH = 128
+import json as _json
+from pathlib import Path as _Path
+_constants = _json.loads((_Path(__file__).resolve().parent.parent.parent / "constants.json").read_text())
+MAX_NONCE_LENGTH = _constants["MAX_NONCE_LENGTH"]
+MAX_RETURN_TO_LENGTH = _constants["MAX_RETURN_TO_LENGTH"]
+MAX_FP_LENGTH = _constants["MAX_FP_LENGTH"]
 
 
 class GateMiddleware:
@@ -31,6 +35,8 @@ class GateMiddleware:
             else:
                 raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
         wallet_address = settings.HOME_WALLET_ADDRESS
+        if wallet_address and not is_valid_solana_address(wallet_address):
+            raise ValueError(f"HOME_WALLET_ADDRESS '{wallet_address}' is not a valid Solana public key (expected 32-44 base58 characters).")
         debug = settings.DEBUG
         rpc_url = settings.SOLANA_RPC_URL or (RPC_DEVNET if debug else RPC_MAINNET)
         usdc_mint = settings.USDC_MINT or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
@@ -101,6 +107,9 @@ class GateMiddleware:
 @csrf_exempt
 @require_POST
 def challenge_verify(request):
+    client_ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+    if not _challenge_limiter.check(client_ip):
+        return JsonResponse({"error": "rate_limited", "message": "Too many verification attempts. Please wait and try again."}, status=429)
     secret = settings.CHALLENGE_SECRET
     nonce = request.POST.get("nonce", "")[:MAX_NONCE_LENGTH]
     return_to = request.POST.get("return_to", "/")[:MAX_RETURN_TO_LENGTH]
