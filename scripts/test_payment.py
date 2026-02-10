@@ -11,7 +11,8 @@ Usage:
     python test_payment.py                  # auto-generates a test agent key
     python test_payment.py <agent_key>      # use a specific key (e.g. from a 402 response)
 
-Reads HOME_WALLET_ADDRESS from .env
+Reads HOME_WALLET_ADDRESS from .env.
+Optional: set SOLANA_RPC_URL (or DEVNET_RPC_URL) to use a provider endpoint.
 """
 
 import os
@@ -28,7 +29,7 @@ from spl.token.client import Token
 from spl.token.constants import TOKEN_PROGRAM_ID
 from spl.token.instructions import transfer_checked, TransferCheckedParams
 
-DEVNET_URL = "https://api.devnet.solana.com"
+DEFAULT_DEVNET_RPC = "https://api.devnet.solana.com"
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 DECIMALS = 6
 TRANSFER_AMOUNT = 10_000  # 0.01 with 6 decimals
@@ -76,7 +77,12 @@ def main():
 
     agent_key = sys.argv[1] if len(sys.argv) > 1 else f"ag_test_{int(time.time())}"
     receiver = Pubkey.from_string(receiver_addr)
-    client = Client(DEVNET_URL)
+    rpc_url = (
+        os.environ.get("SOLANA_RPC_URL")
+        or os.environ.get("DEVNET_RPC_URL")
+        or DEFAULT_DEVNET_RPC
+    )
+    client = Client(rpc_url)
 
     print("=" * 60)
     print("SOLANA DEVNET PAYMENT TEST")
@@ -84,6 +90,7 @@ def main():
     print(f"  Receiver wallet: {receiver_addr}")
     print(f"  Agent key (memo): {agent_key}")
     print(f"  Amount: {TRANSFER_AMOUNT / 10**DECIMALS} tokens")
+    print(f"  RPC endpoint: {rpc_url}")
     print()
 
     # 1. Load or create payer wallet (persisted so you can manually fund it)
@@ -198,7 +205,7 @@ def main():
     # 7. Verify using verify_payment.py logic
     print()
     print("7. Verifying payment on-chain...")
-    os.environ["SOLANA_RPC_URL"] = DEVNET_URL
+    os.environ["SOLANA_RPC_URL"] = rpc_url
     os.environ["USDC_MINT"] = mint_address
 
     from verify_payment import verify_payment
