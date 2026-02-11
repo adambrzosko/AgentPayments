@@ -60,6 +60,9 @@
     </div>
     <button onclick="createKey()">Create Key</button>
     <pre id="newKey">none</pre>
+    <p class="muted">Copy this into your LLM:</p>
+    <textarea id="llmInstructions" rows="14" placeholder="Instructions will appear after key creation"></textarea>
+    <button onclick="copyLlmInstructions()">Copy LLM Instructions</button>
   </div>
 
   <div class="card">
@@ -149,6 +152,12 @@ async function createKey() {
   });
   const data = await r.json();
   newKey.textContent = JSON.stringify(data, null, 2);
+  llmInstructions.value = data.llmSetupInstructions || '';
+}
+
+async function copyLlmInstructions() {
+  if (!llmInstructions.value) return;
+  await navigator.clipboard.writeText(llmInstructions.value);
 }
 
 async function requestFaucetTopup() {

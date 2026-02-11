@@ -322,7 +322,11 @@ app.post('/api/keys', authUser, (req, res) => {
   };
   req.db.apiKeys.push(newKey);
   writeDb(req.db);
-  res.json({ ...newKey, rawKey });
+
+  const effectivePolicy = getPolicy(req.user, newKey);
+  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make SOL payments ONLY through this tool.\n\nEndpoint:\nPOST ${APP_BASE_URL}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountSol\": 0.01,\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} SOL per payment, ${effectivePolicy.dailySolCap} SOL daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
+
+  res.json({ ...newKey, rawKey, llmSetupInstructions });
 });
 
 app.get('/api/keys', authUser, (req, res) => {
