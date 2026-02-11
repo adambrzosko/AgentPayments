@@ -5,6 +5,7 @@ import path from 'path';
 import bs58 from 'bs58';
 import { fileURLToPath } from 'url';
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import pg from 'pg';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,13 @@ const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
 const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
 const BOT_WALLET_FILE = process.env.BOT_WALLET_FILE || path.resolve(__dirname, '..', 'jsons', 'bot-wallet.json');
 const FAUCET_TOPUP_SOL = 0.5;
+const DATABASE_URL = process.env.DATABASE_URL || '';
+const USE_POSTGRES = Boolean(DATABASE_URL);
+const { Pool } = pg;
+const pool = USE_POSTGRES ? new Pool({
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+}) : null;
 
 if (!MASTER_KEY && process.env.NODE_ENV !== 'test') {
   throw new Error('MASTER_KEY is required');
@@ -37,6 +45,10 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));
+
+initPostgres().catch((err) => {
+  console.error('Failed to initialize postgres schema:', err);
+});
 
 const rate = new Map();
 function rateLimit(bucket, max, windowMs) {
@@ -65,6 +77,100 @@ function readDb() {
 
 function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+}
+
+async function initPostgres() {
+  if (!USE_POSTGRES) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      wallet_public_key TEXT NOT NULL,
+      wallet_encrypted_secret JSONB NOT NULL,
+      policy JSONB NOT NULL,
+      session_token_hash TEXT,
+      session_expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_prefix TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT true,
+      max_sol_per_payment DOUBLE PRECISION,
+      daily_sol_cap DOUBLE PRECISION,
+      allowlisted_recipients JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      api_key_id TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+      recipient TEXT NOT NULL,
+      amount_sol DOUBLE PRECISION NOT NULL,
+      reason TEXT NOT NULL,
+      resource_url TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_session_token_hash ON users(session_token_hash);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_lookup ON api_keys(key_prefix, key_hash) WHERE active = true;
+    CREATE INDEX IF NOT EXISTS idx_payments_user_created_at ON payments(user_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_user_idem ON payments(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `);
+}
+
+function mapUserRow(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    wallet: {
+      publicKey: row.wallet_public_key,
+      encryptedSecret: row.wallet_encrypted_secret
+    },
+    policy: row.policy,
+    sessionTokenHash: row.session_token_hash,
+    sessionExpiresAt: row.session_expires_at ? new Date(row.session_expires_at).toISOString() : null,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+  };
+}
+
+function mapApiKeyRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    keyPrefix: row.key_prefix,
+    keyHash: row.key_hash,
+    active: row.active,
+    maxSolPerPayment: row.max_sol_per_payment,
+    dailySolCap: row.daily_sol_cap,
+    allowlistedRecipients: row.allowlisted_recipients || [],
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+  };
+}
+
+function mapPaymentRow(row) {
+  return {
+    id: row.id,
+    idempotencyKey: row.idempotency_key,
+    userId: row.user_id,
+    apiKeyId: row.api_key_id,
+    recipient: row.recipient,
+    amountSol: Number(row.amount_sol),
+    reason: row.reason,
+    resourceUrl: row.resource_url,
+    signature: row.signature,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+  };
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -118,32 +224,71 @@ function parseSolanaAddress(value) {
   }
 }
 
-function authUser(req, res, next) {
-  const token = String(req.headers['x-session-token'] || '');
-  if (!token) return res.status(401).json({ error: 'Missing session token' });
-  const tokenHash = hashToken(token);
-  const db = readDb();
-  const user = db.users.find((u) => u.sessionTokenHash === tokenHash && (!u.sessionExpiresAt || Date.now() < new Date(u.sessionExpiresAt).getTime()));
-  if (!user) return res.status(401).json({ error: 'Invalid session token' });
-  req.user = user;
-  req.db = db;
-  next();
+async function authUser(req, res, next) {
+  try {
+    const token = String(req.headers['x-session-token'] || '');
+    if (!token) return res.status(401).json({ error: 'Missing session token' });
+    const tokenHash = hashToken(token);
+
+    if (USE_POSTGRES) {
+      const result = await pool.query(
+        `SELECT * FROM users WHERE session_token_hash = $1 AND (session_expires_at IS NULL OR session_expires_at > NOW()) LIMIT 1`,
+        [tokenHash]
+      );
+      if (!result.rows[0]) return res.status(401).json({ error: 'Invalid session token' });
+      req.user = mapUserRow(result.rows[0]);
+      req.db = null;
+      return next();
+    }
+
+    const db = readDb();
+    const user = db.users.find((u) => u.sessionTokenHash === tokenHash && (!u.sessionExpiresAt || Date.now() < new Date(u.sessionExpiresAt).getTime()));
+    if (!user) return res.status(401).json({ error: 'Invalid session token' });
+    req.user = user;
+    req.db = db;
+    next();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 }
 
-function authTool(req, res, next) {
-  const raw = String(req.headers['x-wallet-tool-key'] || '');
-  if (!raw.startsWith('ak_')) return res.status(401).json({ error: 'Missing wallet tool key' });
-  const keyPrefix = raw.slice(0, 12);
-  const keyHash = hashToken(raw);
-  const db = readDb();
-  const apiKey = db.apiKeys.find((k) => k.keyPrefix === keyPrefix && k.keyHash === keyHash && k.active);
-  if (!apiKey) return res.status(401).json({ error: 'Invalid wallet tool key' });
-  const user = db.users.find((u) => u.id === apiKey.userId);
-  if (!user) return res.status(401).json({ error: 'Key owner missing' });
-  req.user = user;
-  req.apiKey = apiKey;
-  req.db = db;
-  next();
+async function authTool(req, res, next) {
+  try {
+    const raw = String(req.headers['x-wallet-tool-key'] || '');
+    if (!raw.startsWith('ak_')) return res.status(401).json({ error: 'Missing wallet tool key' });
+    const keyPrefix = raw.slice(0, 12);
+    const keyHash = hashToken(raw);
+
+    if (USE_POSTGRES) {
+      const keyResult = await pool.query(
+        `SELECT * FROM api_keys WHERE key_prefix = $1 AND key_hash = $2 AND active = true LIMIT 1`,
+        [keyPrefix, keyHash]
+      );
+      const apiKeyRow = keyResult.rows[0];
+      if (!apiKeyRow) return res.status(401).json({ error: 'Invalid wallet tool key' });
+
+      const userResult = await pool.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [apiKeyRow.user_id]);
+      const userRow = userResult.rows[0];
+      if (!userRow) return res.status(401).json({ error: 'Key owner missing' });
+
+      req.user = mapUserRow(userRow);
+      req.apiKey = mapApiKeyRow(apiKeyRow);
+      req.db = null;
+      return next();
+    }
+
+    const db = readDb();
+    const apiKey = db.apiKeys.find((k) => k.keyPrefix === keyPrefix && k.keyHash === keyHash && k.active);
+    if (!apiKey) return res.status(401).json({ error: 'Invalid wallet tool key' });
+    const user = db.users.find((u) => u.id === apiKey.userId);
+    if (!user) return res.status(401).json({ error: 'Key owner missing' });
+    req.user = user;
+    req.apiKey = apiKey;
+    req.db = db;
+    next();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 }
 
 function getPolicy(user, apiKey) {
@@ -185,14 +330,19 @@ function isDevnetRpc(url) {
   return String(url || '').toLowerCase().includes('devnet');
 }
 
-app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), (req, res) => {
+app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), async (req, res) => {
   try {
     const email = parseEmail(req.body.email);
     const password = String(req.body.password || '');
     if (!email || password.length < 10) return res.status(400).json({ error: 'Valid email + password (min 10 chars) required' });
 
-    const db = readDb();
-    if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'Email already exists' });
+    if (USE_POSTGRES) {
+      const existing = await pool.query(`SELECT id FROM users WHERE email = $1 LIMIT 1`, [email]);
+      if (existing.rows[0]) return res.status(409).json({ error: 'Email already exists' });
+    } else {
+      const db = readDb();
+      if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'Email already exists' });
+    }
 
     const kp = Keypair.generate();
     const secret58 = bs58.encode(kp.secretKey);
@@ -208,8 +358,27 @@ app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), (req, res) => {
       createdAt: new Date().toISOString()
     };
 
-    db.users.push(user);
-    writeDb(db);
+    if (USE_POSTGRES) {
+      await pool.query(
+        `INSERT INTO users (id, email, password_hash, wallet_public_key, wallet_encrypted_secret, policy, session_token_hash, session_expires_at, created_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9)`,
+        [
+          user.id,
+          user.email,
+          user.passwordHash,
+          user.wallet.publicKey,
+          JSON.stringify(user.wallet.encryptedSecret),
+          JSON.stringify(user.policy),
+          user.sessionTokenHash,
+          user.sessionExpiresAt,
+          user.createdAt
+        ]
+      );
+    } else {
+      const db = readDb();
+      db.users.push(user);
+      writeDb(db);
+    }
 
     res.json({ sessionToken, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
   } catch (e) {
@@ -217,19 +386,38 @@ app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), (req, res) => {
   }
 });
 
-app.post('/api/login', rateLimit('login', 30, 15 * 60 * 1000), (req, res) => {
+app.post('/api/login', rateLimit('login', 30, 15 * 60 * 1000), async (req, res) => {
   const email = parseEmail(req.body.email);
   const password = String(req.body.password || '');
   if (!email) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const db = readDb();
-  const user = db.users.find((u) => u.email === email);
+  let user;
+  if (USE_POSTGRES) {
+    const result = await pool.query(`SELECT * FROM users WHERE email = $1 LIMIT 1`, [email]);
+    if (!result.rows[0]) return res.status(401).json({ error: 'Invalid credentials' });
+    user = mapUserRow(result.rows[0]);
+  } else {
+    const db = readDb();
+    user = db.users.find((u) => u.email === email);
+  }
+
   if (!user || !verifyPassword(password, user.passwordHash)) return res.status(401).json({ error: 'Invalid credentials' });
 
   const sessionToken = issueToken(24);
   user.sessionTokenHash = hashToken(sessionToken);
   user.sessionExpiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-  writeDb(db);
+
+  if (USE_POSTGRES) {
+    await pool.query(`UPDATE users SET session_token_hash = $1, session_expires_at = $2 WHERE id = $3`, [user.sessionTokenHash, user.sessionExpiresAt, user.id]);
+  } else {
+    const db = readDb();
+    const u = db.users.find((x) => x.id === user.id);
+    if (u) {
+      u.sessionTokenHash = user.sessionTokenHash;
+      u.sessionExpiresAt = user.sessionExpiresAt;
+      writeDb(db);
+    }
+  }
 
   res.json({ sessionToken, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
 });
@@ -296,7 +484,7 @@ app.post('/api/faucet', authUser, async (req, res) => {
   }
 });
 
-app.post('/api/keys', authUser, (req, res) => {
+app.post('/api/keys', authUser, async (req, res) => {
   const name = String(req.body.name || 'default').slice(0, 80);
   const maxSolPerPayment = req.body.maxSolPerPayment != null ? Number(req.body.maxSolPerPayment) : null;
   const dailySolCap = req.body.dailySolCap != null ? Number(req.body.dailySolCap) : null;
@@ -320,8 +508,28 @@ app.post('/api/keys', authUser, (req, res) => {
     allowlistedRecipients,
     createdAt: new Date().toISOString()
   };
-  req.db.apiKeys.push(newKey);
-  writeDb(req.db);
+
+  if (USE_POSTGRES) {
+    await pool.query(
+      `INSERT INTO api_keys (id, user_id, name, key_prefix, key_hash, active, max_sol_per_payment, daily_sol_cap, allowlisted_recipients, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
+      [
+        newKey.id,
+        newKey.userId,
+        newKey.name,
+        newKey.keyPrefix,
+        newKey.keyHash,
+        true,
+        newKey.maxSolPerPayment,
+        newKey.dailySolCap,
+        JSON.stringify(newKey.allowlistedRecipients),
+        newKey.createdAt
+      ]
+    );
+  } else {
+    req.db.apiKeys.push(newKey);
+    writeDb(req.db);
+  }
 
   const effectivePolicy = getPolicy(req.user, newKey);
   const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make SOL payments ONLY through this tool.\n\nEndpoint:\nPOST ${APP_BASE_URL}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountSol\": 0.01,\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} SOL per payment, ${effectivePolicy.dailySolCap} SOL daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
@@ -329,12 +537,17 @@ app.post('/api/keys', authUser, (req, res) => {
   res.json({ ...newKey, rawKey, llmSetupInstructions });
 });
 
-app.get('/api/keys', authUser, (req, res) => {
+app.get('/api/keys', authUser, async (req, res) => {
+  if (USE_POSTGRES) {
+    const result = await pool.query(`SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC`, [req.user.id]);
+    const keys = result.rows.map(mapApiKeyRow).map((k) => ({ ...k, keyHash: undefined }));
+    return res.json(keys);
+  }
   const keys = req.db.apiKeys.filter((k) => k.userId === req.user.id).map((k) => ({ ...k, keyHash: undefined }));
   res.json(keys);
 });
 
-app.post('/api/policy', authUser, (req, res) => {
+app.post('/api/policy', authUser, async (req, res) => {
   const { maxSolPerPayment, dailySolCap, allowlistedRecipients } = req.body;
   if (maxSolPerPayment != null) {
     const n = Number(maxSolPerPayment);
@@ -349,7 +562,12 @@ app.post('/api/policy', authUser, (req, res) => {
   if (Array.isArray(allowlistedRecipients)) {
     req.user.policy.allowlistedRecipients = allowlistedRecipients.map(parseSolanaAddress).filter(Boolean);
   }
-  writeDb(req.db);
+
+  if (USE_POSTGRES) {
+    await pool.query(`UPDATE users SET policy = $1::jsonb WHERE id = $2`, [JSON.stringify(req.user.policy), req.user.id]);
+  } else {
+    writeDb(req.db);
+  }
   res.json(req.user.policy);
 });
 
@@ -370,9 +588,20 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
     if (!recipient || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'Valid recipient and amountSol required' });
 
     if (idem) {
-      const existing = req.db.payments.find((p) => p.userId === req.user.id && p.idempotencyKey === idem);
-      if (existing) {
-        return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=devnet` });
+      if (USE_POSTGRES) {
+        const existingResult = await pool.query(
+          `SELECT * FROM payments WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1`,
+          [req.user.id, idem]
+        );
+        if (existingResult.rows[0]) {
+          const existing = mapPaymentRow(existingResult.rows[0]);
+          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=devnet` });
+        }
+      } else {
+        const existing = req.db.payments.find((p) => p.userId === req.user.id && p.idempotencyKey === idem);
+        if (existing) {
+          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=devnet` });
+        }
       }
     }
 
@@ -380,10 +609,20 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
     if (amount > policy.maxSolPerPayment) return res.status(403).json({ error: `amount exceeds per-payment limit (${policy.maxSolPerPayment} SOL)` });
     if (policy.allowlistedRecipients.length > 0 && !policy.allowlistedRecipients.includes(recipient)) return res.status(403).json({ error: 'recipient not in allowlist' });
 
-    const since = Date.now() - 24 * 3600 * 1000;
-    const paidToday = req.db.payments
-      .filter((p) => p.userId === req.user.id && new Date(p.createdAt).getTime() >= since)
-      .reduce((sum, p) => sum + p.amountSol, 0);
+    let paidToday = 0;
+    if (USE_POSTGRES) {
+      const sumResult = await pool.query(
+        `SELECT COALESCE(SUM(amount_sol), 0) AS paid_today FROM payments WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
+        [req.user.id]
+      );
+      paidToday = Number(sumResult.rows[0]?.paid_today || 0);
+    } else {
+      const since = Date.now() - 24 * 3600 * 1000;
+      paidToday = req.db.payments
+        .filter((p) => p.userId === req.user.id && new Date(p.createdAt).getTime() >= since)
+        .reduce((sum, p) => sum + p.amountSol, 0);
+    }
+
     if (paidToday + amount > policy.dailySolCap) return res.status(403).json({ error: 'daily cap exceeded' });
 
     const balance = await getBalanceSol(req.user.wallet.publicKey);
@@ -404,8 +643,28 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
       signature,
       createdAt: new Date().toISOString()
     };
-    req.db.payments.push(payment);
-    writeDb(req.db);
+
+    if (USE_POSTGRES) {
+      await pool.query(
+        `INSERT INTO payments (id, idempotency_key, user_id, api_key_id, recipient, amount_sol, reason, resource_url, signature, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          payment.id,
+          payment.idempotencyKey,
+          payment.userId,
+          payment.apiKeyId,
+          payment.recipient,
+          payment.amountSol,
+          payment.reason,
+          payment.resourceUrl,
+          payment.signature,
+          payment.createdAt
+        ]
+      );
+    } else {
+      req.db.payments.push(payment);
+      writeDb(req.db);
+    }
 
     res.json({ ok: true, signature, explorer: `https://explorer.solana.com/tx/${signature}?cluster=devnet`, payment });
   } catch (e) {

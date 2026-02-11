@@ -51,7 +51,7 @@ npm test
 
 ## Known gaps before production
 - No MFA / no email verification
-- JSON file storage (replace with Postgres)
+- If `DATABASE_URL` is unset, fallback JSON file storage is used (set Postgres in production)
 - No key rotation UX, no signed challenge validation yet
 - No per-domain policy / no challenge-price verification
 - No idempotency keys / no approval workflow above thresholds
