@@ -102,7 +102,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
     const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [
       walletAddress,
       { mint: usdcMint },
-      { encoding: 'jsonParsed' },
+      { encoding: 'jsonParsed', commitment: 'confirmed' },
     ]);
 
     const tokenAccounts = (ataData.result?.value || []).map((a) => a.pubkey);
@@ -111,7 +111,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
     const allSignatures = [];
 
     for (const addr of addressesToScan) {
-      const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50 }]);
+      const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50, commitment: 'confirmed' }]);
       for (const sig of sigsData.result || []) {
         if (!seen.has(sig.signature)) {
           seen.add(sig.signature);
@@ -125,7 +125,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
 
       const txData = await rpcCall(rpcUrl, 'getTransaction', [
         sigInfo.signature,
-        { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 },
+        { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
       ]);
       const tx = txData.result;
       if (!tx) continue;

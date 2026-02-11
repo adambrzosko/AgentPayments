@@ -68,7 +68,7 @@ def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, u
         logger.error("[gate] Invalid wallet address: %s", wallet_address)
         return False
     try:
-        ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [wallet_address, {"mint": usdc_mint}, {"encoding": "jsonParsed"}])
+        ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [wallet_address, {"mint": usdc_mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
         token_accounts = [a["pubkey"] for a in ata_data.get("result", {}).get("value", [])]
 
         addresses_to_scan = [wallet_address] + token_accounts
@@ -76,7 +76,7 @@ def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, u
         all_signatures = []
 
         for addr in addresses_to_scan:
-            sigs_data = _rpc_call(rpc_url, "getSignaturesForAddress", [addr, {"limit": 50}])
+            sigs_data = _rpc_call(rpc_url, "getSignaturesForAddress", [addr, {"limit": 50, "commitment": "confirmed"}])
             for sig in sigs_data.get("result", []):
                 if sig["signature"] not in seen:
                     seen.add(sig["signature"])
@@ -86,7 +86,7 @@ def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, u
             if sig_info.get("err"):
                 continue
 
-            tx_data = _rpc_call(rpc_url, "getTransaction", [sig_info["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}])
+            tx_data = _rpc_call(rpc_url, "getTransaction", [sig_info["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}])
             tx = tx_data.get("result")
             if not tx:
                 continue

@@ -32,7 +32,7 @@ def verify_payment_on_chain(
         ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [
             wallet_address,
             {"mint": usdc_mint},
-            {"encoding": "jsonParsed"},
+            {"encoding": "jsonParsed", "commitment": "confirmed"},
         ])
         token_accounts = [a["pubkey"] for a in ata_data.get("result", {}).get("value", [])]
 
@@ -41,7 +41,7 @@ def verify_payment_on_chain(
         all_signatures = []
 
         for addr in addresses_to_scan:
-            sigs_data = _rpc_call(rpc_url, "getSignaturesForAddress", [addr, {"limit": 50}])
+            sigs_data = _rpc_call(rpc_url, "getSignaturesForAddress", [addr, {"limit": 50, "commitment": "confirmed"}])
             for sig in sigs_data.get("result", []):
                 if sig["signature"] not in seen:
                     seen.add(sig["signature"])
@@ -53,7 +53,7 @@ def verify_payment_on_chain(
 
             tx_data = _rpc_call(rpc_url, "getTransaction", [
                 sig_info["signature"],
-                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"},
             ])
             tx = tx_data.get("result")
             if not tx:
