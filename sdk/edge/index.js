@@ -1,3 +1,5 @@
+// Values sourced from sdk/constants.json (canonical). Inlined here because JSON
+// import syntax differs across Deno (Netlify), Cloudflare Workers, and Vercel Edge.
 const COOKIE_NAME = '__agp_verified';
 const COOKIE_MAX_AGE = 86400;
 const KEY_PREFIX = 'ag_';
@@ -11,6 +13,48 @@ const MAX_KEY_LENGTH = 64;
 const MAX_NONCE_LENGTH = 128;
 const MAX_RETURN_TO_LENGTH = 2048;
 const MAX_FP_LENGTH = 128;
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const PAYMENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const PAYMENT_CACHE_MAX = 1000;
+
+const paymentCache = new Map();
+
+function getCachedPayment(key) {
+  const entry = paymentCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > PAYMENT_CACHE_TTL) { paymentCache.delete(key); return undefined; }
+  return entry.value;
+}
+
+function setCachedPayment(key, value) {
+  if (paymentCache.size >= PAYMENT_CACHE_MAX) {
+    const oldest = paymentCache.keys().next().value;
+    paymentCache.delete(oldest);
+  }
+  paymentCache.set(key, { value, ts: Date.now() });
+}
+
+function gateLog(level, message, data = {}) {
+  const entry = JSON.stringify({ ts: new Date().toISOString(), level, component: 'agentpayments', message, ...data });
+  if (level === 'error') console.error(entry);
+  else if (level === 'warn') console.warn(entry);
+  else console.log(entry);
+}
+
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 20;
+const rateLimitHits = new Map();
+
+function rateLimitCheck(key) {
+  const now = Date.now();
+  const entry = rateLimitHits.get(key);
+  if (!entry || now - entry.start > RATE_LIMIT_WINDOW) {
+    rateLimitHits.set(key, { start: now, count: 1 });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= RATE_LIMIT_MAX;
+}
 
 async function hmacSign(data, secret) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -50,14 +94,19 @@ async function isValidAgentKey(key, secret) {
   return timingSafeEqual(sig, expected.slice(0, 16));
 }
 
+async function rpcCall(rpcUrl, method, params) {
+  const resp = await fetch(rpcUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  if (!resp.ok) throw new Error(`RPC ${method} failed: ${resp.status}`);
+  return resp.json();
+}
+
 async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
   try {
-    const ataResp = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: [walletAddress, { mint: usdcMint }, { encoding: 'jsonParsed' }] }),
-    });
-    const ataData = await ataResp.json();
+    const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [walletAddress, { mint: usdcMint }, { encoding: 'jsonParsed' }]);
     const tokenAccounts = (ataData.result?.value || []).map((entry) => entry.pubkey);
 
     const addressesToScan = [walletAddress, ...tokenAccounts];
@@ -65,12 +114,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
     const allSignatures = [];
 
     for (const addr of addressesToScan) {
-      const sigsResp = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [addr, { limit: 50 }] }),
-      });
-      const sigsData = await sigsResp.json();
+      const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50 }]);
       for (const sig of sigsData.result || []) {
         if (!seen.has(sig.signature)) {
           seen.add(sig.signature);
@@ -82,12 +126,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
     for (const sigInfo of allSignatures) {
       if (sigInfo.err) continue;
 
-      const txResp = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }] }),
-      });
-      const txData = await txResp.json();
+      const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
       const tx = txData.result;
       if (!tx) continue;
 
@@ -118,7 +157,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
       if (hasMemo && hasPayment) return true;
     }
   } catch (error) {
-    console.error('[gate] Solana RPC error:', error);
+    gateLog('error', 'Solana RPC error', { error: error.message });
   }
 
   return false;
@@ -160,7 +199,7 @@ function jsonResponse(body, status) {
 
 function challengePage(returnTo, nonce) {
   const safePath = returnTo.startsWith('/') ? returnTo : '/';
-  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Just a moment...</title></head><body><script>(function(){if(navigator.webdriver)return;var c=document.createElement("canvas");c.width=200;c.height=50;var ctx=c.getContext("2d");if(!ctx)return;ctx.font="18px Arial";ctx.fillStyle="#1a1a2e";ctx.fillText("verify",10,30);var data=c.toDataURL();if(!data||data.length<100)return;if(typeof window.innerWidth==="undefined"||window.innerWidth===0)return;var form=document.createElement("form");form.method="POST";form.action="/__challenge/verify";var fields={nonce:${JSON.stringify(nonce)},return_to:${JSON.stringify(safePath)},fp:data.slice(22,86)};for(var key in fields){var input=document.createElement("input");input.type="hidden";input.name=key;input.value=fields[key];form.appendChild(input);}document.body.appendChild(form);form.submit();})();</script></body></html>`;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Verifying your access...</title><style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fafafa;color:#333}main{text-align:center;padding:2rem}.spinner{width:40px;height:40px;border:4px solid #e0e0e0;border-top-color:#333;border-radius:50%;animation:spin .8s linear infinite;margin:1rem auto}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><main role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div><p>Verifying your access&hellip;</p><noscript><p><strong>JavaScript is required to verify your access. Please enable JavaScript and reload this page.</strong></p></noscript></main><script>(function(){if(navigator.webdriver)return;var c=document.createElement("canvas");c.width=200;c.height=50;var ctx=c.getContext("2d");if(!ctx)return;ctx.font="18px Arial";ctx.fillStyle="#1a1a2e";ctx.fillText("verify",10,30);var data=c.toDataURL();if(!data||data.length<100)return;if(typeof window.innerWidth==="undefined"||window.innerWidth===0)return;var form=document.createElement("form");form.method="POST";form.action="/__challenge/verify";var fields={nonce:${JSON.stringify(nonce)},return_to:${JSON.stringify(safePath)},fp:data.slice(22,86)};for(var key in fields){var input=document.createElement("input");input.type="hidden";input.name=key;input.value=fields[key];form.appendChild(input);}document.body.appendChild(form);form.submit();})();</script></body></html>`;
   return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' } });
 }
 
@@ -185,10 +224,14 @@ export function createEdgeGate(options = {}) {
     const debug = effectiveEnv.DEBUG !== 'false';
     if (secret === 'default-secret-change-me') {
       if (debug) {
-        console.warn('[gate] WARNING: Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
+        gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
       } else {
         return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: insecure default secret.' }, 500);
       }
+    }
+    if (walletAddress && !BASE58_RE.test(walletAddress)) {
+      gateLog('error', 'Invalid HOME_WALLET_ADDRESS', { walletAddress });
+      return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: invalid wallet address.' }, 500);
     }
     const rpcUrl = effectiveEnv.SOLANA_RPC_URL || (debug ? RPC_DEVNET : RPC_MAINNET);
     const usdcMint = effectiveEnv.USDC_MINT || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
@@ -198,6 +241,10 @@ export function createEdgeGate(options = {}) {
     }
 
     if (url.pathname === '/__challenge/verify' && request.method === 'POST') {
+      const clientIp = getClientIp({ request, env: effectiveEnv, context });
+      if (!rateLimitCheck(clientIp)) {
+        return jsonResponse({ error: 'rate_limited', message: 'Too many verification attempts. Please wait and try again.' }, 429);
+      }
       const formData = await request.formData();
       const nonce = (formData.get('nonce')?.toString() || '').slice(0, MAX_NONCE_LENGTH);
       const returnTo = (formData.get('return_to')?.toString() || '/').slice(0, MAX_RETURN_TO_LENGTH);
@@ -267,7 +314,11 @@ export function createEdgeGate(options = {}) {
         return jsonResponse({ error: 'server_error', message: 'Payment verification unavailable.' }, 500);
       }
 
+      if (getCachedPayment(agentKey) === true) {
+        return fetchUpstream(request, effectiveEnv, context);
+      }
       const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint);
+      if (paid) setCachedPayment(agentKey, true);
       if (!paid) {
         return jsonResponse({
           error: 'payment_required',
@@ -286,7 +337,7 @@ export function createEdgeGate(options = {}) {
 
       const ua = request.headers.get('user-agent') || 'unknown';
       const ip = getClientIp({ request, env: effectiveEnv, context });
-      console.log(`[gate] Payment verified (${debug ? 'devnet' : 'mainnet'}) - agent access granted: key=${agentKey.slice(0, 12)}... ua=${ua} ip=${ip} path=${url.pathname}`);
+      gateLog('info', 'Payment verified - agent access granted', { network: debug ? 'devnet' : 'mainnet', key: agentKey.slice(0, 12) + '...', ua, ip, path: url.pathname });
       return fetchUpstream(request, effectiveEnv, context);
     }
 

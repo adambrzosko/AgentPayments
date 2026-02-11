@@ -1,10 +1,13 @@
 import hmac
+import json
 import time
+from pathlib import Path
 
 from .crypto import hmac_sign
 
-COOKIE_NAME = "__agp_verified"
-COOKIE_MAX_AGE = 86400
+_constants = json.loads((Path(__file__).resolve().parent.parent.parent / "constants.json").read_text())
+COOKIE_NAME = _constants["COOKIE_NAME"]
+COOKIE_MAX_AGE = _constants["COOKIE_MAX_AGE"]
 
 
 def make_cookie(secret: str) -> str:

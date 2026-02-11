@@ -1,15 +1,54 @@
+import json
 import logging
+import re
+import threading
+import time as _time
+from collections import OrderedDict
+from pathlib import Path
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-USDC_MINT_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-USDC_MINT_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-RPC_DEVNET = "https://api.devnet.solana.com"
-RPC_MAINNET = "https://api.mainnet-beta.solana.com"
-MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-MIN_PAYMENT = 0.01
+PAYMENT_CACHE_TTL = 10 * 60  # 10 minutes in seconds
+PAYMENT_CACHE_MAX = 1000
+
+
+class _PaymentCache:
+    def __init__(self, ttl: int = PAYMENT_CACHE_TTL, max_size: int = PAYMENT_CACHE_MAX):
+        self.ttl = ttl
+        self.max_size = max_size
+        self._cache: OrderedDict[str, float] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> bool:
+        with self._lock:
+            ts = self._cache.get(key)
+            if ts is None:
+                return False
+            if _time.time() - ts > self.ttl:
+                del self._cache[key]
+                return False
+            return True
+
+    def set(self, key: str) -> None:
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                self._cache.popitem(last=False)
+            self._cache[key] = _time.time()
+
+
+_payment_cache = _PaymentCache()
+
+BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+_constants = json.loads((Path(__file__).resolve().parent.parent.parent / "constants.json").read_text())
+USDC_MINT_DEVNET = _constants["USDC_MINT_DEVNET"]
+USDC_MINT_MAINNET = _constants["USDC_MINT_MAINNET"]
+RPC_DEVNET = _constants["RPC_DEVNET"]
+RPC_MAINNET = _constants["RPC_MAINNET"]
+MEMO_PROGRAM = _constants["MEMO_PROGRAM"]
+MIN_PAYMENT = _constants["MIN_PAYMENT"]
 
 
 def _rpc_call(rpc_url: str, method: str, params: list) -> dict:
@@ -18,7 +57,16 @@ def _rpc_call(rpc_url: str, method: str, params: list) -> dict:
     return resp.json()
 
 
+def is_valid_solana_address(address: str) -> bool:
+    return bool(address and BASE58_RE.match(address))
+
+
 def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, usdc_mint: str) -> bool:
+    if _payment_cache.get(agent_key):
+        return True
+    if not is_valid_solana_address(wallet_address):
+        logger.error("[gate] Invalid wallet address: %s", wallet_address)
+        return False
     try:
         ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [wallet_address, {"mint": usdc_mint}, {"encoding": "jsonParsed"}])
         token_accounts = [a["pubkey"] for a in ata_data.get("result", {}).get("value", [])]
@@ -76,6 +124,7 @@ def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, u
                             has_payment = True
 
             if has_memo and has_payment:
+                _payment_cache.set(agent_key)
                 return True
     except Exception:
         logger.exception("[gate] Solana RPC error")

@@ -1,9 +1,12 @@
 import hashlib
 import hmac
+import json
 import uuid
+from pathlib import Path
 
-KEY_PREFIX = "ag_"
-MAX_KEY_LENGTH = 64
+_constants = json.loads((Path(__file__).resolve().parent.parent.parent / "constants.json").read_text())
+KEY_PREFIX = _constants["KEY_PREFIX"]
+MAX_KEY_LENGTH = _constants["MAX_KEY_LENGTH"]
 
 
 def hmac_sign(data: str, secret: str) -> str:
