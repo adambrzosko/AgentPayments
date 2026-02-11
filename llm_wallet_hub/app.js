@@ -5,6 +5,13 @@ import path from 'path';
 import bs58 from 'bs58';
 import { fileURLToPath } from 'url';
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createTransferCheckedInstruction,
+  getAssociatedTokenAddressSync
+} from '@solana/spl-token';
 import pg from 'pg';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +25,9 @@ const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
 const BOT_WALLET_FILE = process.env.BOT_WALLET_FILE || path.resolve(__dirname, '..', 'jsons', 'bot-wallet.json');
 const FAUCET_TOPUP_SOL = 0.5;
 const DATABASE_URL = process.env.DATABASE_URL || '';
+const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDC_DECIMALS = 6;
 const USE_POSTGRES = Boolean(DATABASE_URL);
 const { Pool } = pg;
 const pool = USE_POSTGRES ? new Pool({
@@ -299,7 +309,12 @@ function getPolicy(user, apiKey) {
   };
 }
 
+function getUsdcMintAddress() {
+  return isDevnetRpc(SOLANA_RPC_URL) ? USDC_MINT_DEVNET : USDC_MINT_MAINNET;
+}
+
 async function getBalanceSol(publicKeyString) {
+  if (PAYMENTS_DRY_RUN) return 0;
   const lamports = await connection.getBalance(new PublicKey(publicKeyString));
   return lamports / LAMPORTS_PER_SOL;
 }
@@ -310,6 +325,62 @@ async function transferSol(fromSecretBase58, toAddress, amountSol) {
   const toPubkey = new PublicKey(toAddress);
   const lamports = Math.round(amountSol * LAMPORTS_PER_SOL);
   const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: fromKeypair.publicKey, toPubkey, lamports }));
+  const signature = await connection.sendTransaction(tx, [fromKeypair]);
+  await connection.confirmTransaction(signature, 'confirmed');
+  return signature;
+}
+
+async function getUsdcBalance(publicKeyString, mintAddress = getUsdcMintAddress()) {
+  if (PAYMENTS_DRY_RUN) return 0;
+  const owner = new PublicKey(publicKeyString);
+  const mint = new PublicKey(mintAddress);
+  const ata = getAssociatedTokenAddressSync(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const info = await connection.getParsedAccountInfo(ata);
+  if (!info.value) return 0;
+  const parsed = info.value.data?.parsed;
+  const uiAmount = parsed?.info?.tokenAmount?.uiAmount;
+  return Number(uiAmount || 0);
+}
+
+async function transferUsdc(fromSecretBase58, toAddress, amountUsdc, mintAddress = getUsdcMintAddress()) {
+  if (PAYMENTS_DRY_RUN) return `dryrun_${crypto.randomUUID()}`;
+
+  const fromKeypair = Keypair.fromSecretKey(bs58.decode(fromSecretBase58));
+  const recipient = new PublicKey(toAddress);
+  const mint = new PublicKey(mintAddress);
+
+  const fromAta = getAssociatedTokenAddressSync(mint, fromKeypair.publicKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const toAta = getAssociatedTokenAddressSync(mint, recipient, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const amountAtomic = BigInt(Math.round(amountUsdc * 10 ** USDC_DECIMALS));
+
+  const tx = new Transaction();
+  const recipientAtaInfo = await connection.getAccountInfo(toAta);
+  if (!recipientAtaInfo) {
+    tx.add(
+      createAssociatedTokenAccountInstruction(
+        fromKeypair.publicKey,
+        toAta,
+        recipient,
+        mint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
+  tx.add(
+    createTransferCheckedInstruction(
+      fromAta,
+      mint,
+      toAta,
+      fromKeypair.publicKey,
+      amountAtomic,
+      USDC_DECIMALS,
+      [],
+      TOKEN_PROGRAM_ID
+    )
+  );
+
   const signature = await connection.sendTransaction(tx, [fromKeypair]);
   await connection.confirmTransaction(signature, 'confirmed');
   return signature;
@@ -540,7 +611,7 @@ app.post('/api/keys', authUser, async (req, res) => {
 
   const effectivePolicy = getPolicy(req.user, newKey);
   const baseUrl = getPublicBaseUrl(req);
-  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make SOL payments ONLY through this tool.\n\nEndpoint:\nPOST ${baseUrl}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountSol\": 0.01,\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} SOL per payment, ${effectivePolicy.dailySolCap} SOL daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
+  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make USDC (SPL token on Solana) payments ONLY through this tool.\n\nEndpoint:\nPOST ${baseUrl}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountUsdc\": 0.01,\n  \"token\": \"USDC\",\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} USDC per payment, ${effectivePolicy.dailySolCap} USDC daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
 
   res.json({ ...newKey, rawKey, llmSetupInstructions });
 });
@@ -582,19 +653,21 @@ app.post('/api/policy', authUser, async (req, res) => {
 app.get('/api/system-prompt', authUser, (req, res) => {
   const { model = 'gpt' } = req.query;
   const baseUrl = getPublicBaseUrl(req);
-  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountSol": 0.01,\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${baseUrl}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
+  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountUsdc": 0.01,\n  "token": "USDC",\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${baseUrl}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
   res.json({ model, prompt });
 });
 
 app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async (req, res) => {
   try {
     const recipient = parseSolanaAddress(req.body.recipient);
-    const amount = Number(req.body.amountSol);
+    const amount = Number(req.body.amountUsdc ?? req.body.amountSol);
+    const token = String(req.body.token || 'USDC').toUpperCase();
     const reason = String(req.body.reason || '').slice(0, 500);
     const resourceUrl = String(req.body.resourceUrl || '').slice(0, 1200);
     const idem = String(req.headers['x-idempotency-key'] || '').trim();
 
-    if (!recipient || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'Valid recipient and amountSol required' });
+    if (!recipient || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'Valid recipient and amountUsdc required' });
+    if (token !== 'USDC') return res.status(400).json({ error: 'Only USDC is currently supported by /api/tool/pay' });
 
     if (idem) {
       if (USE_POSTGRES) {
@@ -615,7 +688,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
     }
 
     const policy = getPolicy(req.user, req.apiKey);
-    if (amount > policy.maxSolPerPayment) return res.status(403).json({ error: `amount exceeds per-payment limit (${policy.maxSolPerPayment} SOL)` });
+    if (amount > policy.maxSolPerPayment) return res.status(403).json({ error: `amount exceeds per-payment limit (${policy.maxSolPerPayment} USDC)` });
     if (policy.allowlistedRecipients.length > 0 && !policy.allowlistedRecipients.includes(recipient)) return res.status(403).json({ error: 'recipient not in allowlist' });
 
     let paidToday = 0;
@@ -634,11 +707,16 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
 
     if (paidToday + amount > policy.dailySolCap) return res.status(403).json({ error: 'daily cap exceeded' });
 
-    const balance = await getBalanceSol(req.user.wallet.publicKey);
-    if (!PAYMENTS_DRY_RUN && balance < amount + 0.00001) return res.status(402).json({ error: 'insufficient balance' });
+    if (!PAYMENTS_DRY_RUN) {
+      const usdcBalance = await getUsdcBalance(req.user.wallet.publicKey);
+      if (usdcBalance < amount) return res.status(402).json({ error: 'insufficient USDC balance' });
+
+      const feeSolBalance = await getBalanceSol(req.user.wallet.publicKey);
+      if (feeSolBalance < 0.00001) return res.status(402).json({ error: 'insufficient SOL for transaction fees' });
+    }
 
     const secret58 = decryptSecret(req.user.wallet.encryptedSecret);
-    const signature = await transferSol(secret58, recipient, amount);
+    const signature = await transferUsdc(secret58, recipient, amount, getUsdcMintAddress());
 
     const payment = {
       id: crypto.randomUUID(),
@@ -675,7 +753,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
       writeDb(req.db);
     }
 
-    res.json({ ok: true, signature, explorer: `https://explorer.solana.com/tx/${signature}?cluster=devnet`, payment });
+    res.json({ ok: true, token: 'USDC', amountUsdc: amount, signature, explorer: `https://explorer.solana.com/tx/${signature}?cluster=devnet`, payment });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -683,7 +761,8 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
 
 app.get('/api/tool/balance', authTool, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
-  res.json({ walletAddress: req.user.wallet.publicKey, balanceSol });
+  const balanceUsdc = await getUsdcBalance(req.user.wallet.publicKey);
+  res.json({ walletAddress: req.user.wallet.publicKey, balanceSol, balanceUsdc, token: 'USDC', usdcMint: getUsdcMintAddress() });
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));

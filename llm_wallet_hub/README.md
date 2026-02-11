@@ -7,6 +7,8 @@ Separate software that:
 - enforces hard policy controls,
 - exposes a payment tool endpoint and generated system prompt.
 
+Tool payments are USDC SPL token transfers on Solana (memo/verification compatible with AgentPayments paywall).
+
 ## What this is
 MVP for cross-LLM wallet execution via tools (GPT/Claude/Gemini).
 
@@ -63,7 +65,8 @@ curl -X POST http://localhost:8787/api/tool/pay \
   -H 'x-wallet-tool-key: ak_...' \
   -d '{
     "recipient": "RecipientPublicKey",
-    "amountSol": 0.01,
+    "amountUsdc": 0.01,
+    "token": "USDC",
     "reason": "Need access to paywalled docs",
     "resourceUrl": "https://example.com/docs"
   }'
