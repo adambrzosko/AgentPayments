@@ -10,7 +10,7 @@ import pg from 'pg';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:8787';
+const APP_BASE_URL = process.env.APP_BASE_URL || '';
 const MASTER_KEY = process.env.MASTER_KEY || '';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
@@ -330,6 +330,13 @@ function isDevnetRpc(url) {
   return String(url || '').toLowerCase().includes('devnet');
 }
 
+function getPublicBaseUrl(req) {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  return `${proto}://${host}`;
+}
+
 app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), async (req, res) => {
   try {
     const email = parseEmail(req.body.email);
@@ -532,7 +539,8 @@ app.post('/api/keys', authUser, async (req, res) => {
   }
 
   const effectivePolicy = getPolicy(req.user, newKey);
-  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make SOL payments ONLY through this tool.\n\nEndpoint:\nPOST ${APP_BASE_URL}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountSol\": 0.01,\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} SOL per payment, ${effectivePolicy.dailySolCap} SOL daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
+  const baseUrl = getPublicBaseUrl(req);
+  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make SOL payments ONLY through this tool.\n\nEndpoint:\nPOST ${baseUrl}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountSol\": 0.01,\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} SOL per payment, ${effectivePolicy.dailySolCap} SOL daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
 
   res.json({ ...newKey, rawKey, llmSetupInstructions });
 });
@@ -573,7 +581,8 @@ app.post('/api/policy', authUser, async (req, res) => {
 
 app.get('/api/system-prompt', authUser, (req, res) => {
   const { model = 'gpt' } = req.query;
-  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountSol": 0.01,\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${APP_BASE_URL}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
+  const baseUrl = getPublicBaseUrl(req);
+  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountSol": 0.01,\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${baseUrl}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
   res.json({ model, prompt });
 });
 
