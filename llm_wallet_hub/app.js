@@ -15,7 +15,7 @@ const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
 const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
 const BOT_WALLET_FILE = process.env.BOT_WALLET_FILE || path.resolve(__dirname, '..', 'jsons', 'bot-wallet.json');
-const FAUCET_TOPUP_SOL = Number(process.env.FAUCET_TOPUP_SOL || 0.5);
+const FAUCET_TOPUP_SOL = 0.5;
 
 if (!MASTER_KEY && process.env.NODE_ENV !== 'test') {
   throw new Error('MASTER_KEY is required');
