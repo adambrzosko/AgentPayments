@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -61,6 +62,62 @@ def is_valid_solana_address(address: str) -> bool:
     return bool(address and BASE58_RE.match(address))
 
 
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_ED25519_P = 2**255 - 19
+_ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555
+_ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+_TOKEN_PROGRAM_ADDR = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+def _b58decode(s: str) -> bytes:
+    n = 0
+    for c in s:
+        n = n * 58 + _B58.index(c)
+    raw = n.to_bytes(max((n.bit_length() + 7) // 8, 1), "big") if n else b""
+    leading = len(s) - len(s.lstrip("1"))
+    out = b"\x00" * leading + raw
+    return out.rjust(32, b"\x00")
+
+
+def _b58encode(data: bytes) -> str:
+    n = int.from_bytes(data, "big")
+    s = ""
+    while n > 0:
+        n, r = divmod(n, 58)
+        s = _B58[r] + s
+    for b in data:
+        if b != 0:
+            break
+        s = "1" + s
+    return s
+
+
+def _is_on_curve(data: bytes) -> bool:
+    p = _ED25519_P
+    y_bytes = bytearray(data)
+    y_bytes[31] &= 0x7F
+    y = int.from_bytes(y_bytes, "little")
+    if y >= p:
+        return False
+    y2 = y * y % p
+    x2 = (y2 - 1) % p * pow((1 + _ED25519_D * y2) % p, p - 2, p) % p
+    if x2 == 0:
+        return True
+    return pow(x2, (p - 1) // 2, p) == 1
+
+
+def _derive_ata(owner: str, mint: str) -> str | None:
+    seeds = [_b58decode(owner), _b58decode(_TOKEN_PROGRAM_ADDR), _b58decode(mint)]
+    program_id = _b58decode(_ASSOCIATED_TOKEN_PROGRAM)
+    suffix = b"ProgramDerivedAddress"
+    for bump in range(255, -1, -1):
+        buf = b"".join(seeds) + bytes([bump]) + program_id + suffix
+        h = hashlib.sha256(buf).digest()
+        if not _is_on_curve(h):
+            return _b58encode(h)
+    return None
+
+
 def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, usdc_mint: str) -> bool:
     if _payment_cache.get(agent_key):
         return True
@@ -68,10 +125,19 @@ def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url: str, u
         logger.error("[gate] Invalid wallet address: %s", wallet_address)
         return False
     try:
-        ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [wallet_address, {"mint": usdc_mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
-        token_accounts = [a["pubkey"] for a in ata_data.get("result", {}).get("value", [])]
+        derived_ata = _derive_ata(wallet_address, usdc_mint)
 
-        addresses_to_scan = [wallet_address] + token_accounts
+        rpc_accounts = []
+        try:
+            ata_data = _rpc_call(rpc_url, "getTokenAccountsByOwner", [wallet_address, {"mint": usdc_mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+            rpc_accounts = [a["pubkey"] for a in ata_data.get("result", {}).get("value", [])]
+        except Exception:
+            logger.warning("[gate] getTokenAccountsByOwner failed, using derived ATA")
+
+        address_set = {wallet_address, *rpc_accounts}
+        if derived_ata:
+            address_set.add(derived_ata)
+        addresses_to_scan = list(address_set)
         seen = set()
         all_signatures = []
 

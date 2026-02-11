@@ -97,16 +97,78 @@ async function rpcCall(rpcUrl, method, params) {
   return resp.json();
 }
 
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const ED25519_P = 2n ** 255n - 19n;
+const ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
+const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+const TOKEN_PROGRAM_ADDR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+function b58decode(s) {
+  let n = 0n;
+  for (const c of s) n = n * 58n + BigInt(B58.indexOf(c));
+  const out = [];
+  while (n > 0n) { out.unshift(Number(n & 0xffn)); n >>= 8n; }
+  for (const c of s) { if (c !== '1') break; out.unshift(0); }
+  while (out.length < 32) out.unshift(0);
+  return new Uint8Array(out);
+}
+
+function b58encode(bytes) {
+  let n = 0n;
+  for (const b of bytes) n = n * 256n + BigInt(b);
+  let s = '';
+  while (n > 0n) { s = B58[Number(n % 58n)] + s; n /= 58n; }
+  for (const b of bytes) { if (b !== 0) break; s = '1' + s; }
+  return s;
+}
+
+function modpow(b, e, m) {
+  let r = 1n; b = ((b % m) + m) % m;
+  while (e > 0n) { if (e & 1n) r = r * b % m; e >>= 1n; b = b * b % m; }
+  return r;
+}
+
+function isOnCurve(bytes) {
+  let y = 0n;
+  for (let i = 0; i < 32; i++) y += BigInt(i === 31 ? bytes[i] & 0x7f : bytes[i]) << BigInt(8 * i);
+  if (y >= ED25519_P) return false;
+  const y2 = y * y % ED25519_P;
+  const x2 = (y2 - 1n + ED25519_P) % ED25519_P * modpow((1n + ED25519_D * y2) % ED25519_P, ED25519_P - 2n, ED25519_P) % ED25519_P;
+  if (x2 === 0n) return true;
+  return modpow(x2, (ED25519_P - 1n) / 2n, ED25519_P) === 1n;
+}
+
+function deriveAta(owner, mint) {
+  const seeds = [b58decode(owner), b58decode(TOKEN_PROGRAM_ADDR), b58decode(mint)];
+  const programId = b58decode(ASSOCIATED_TOKEN_PROGRAM);
+  const suffix = Buffer.from('ProgramDerivedAddress');
+  for (let bump = 255; bump >= 0; bump--) {
+    const buf = Buffer.concat([...seeds, Buffer.from([bump]), programId, suffix]);
+    const hash = crypto.createHash('sha256').update(buf).digest();
+    if (!isOnCurve(hash)) return b58encode(hash);
+  }
+  return null;
+}
+
 async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
   try {
-    const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [
-      walletAddress,
-      { mint: usdcMint },
-      { encoding: 'jsonParsed', commitment: 'confirmed' },
-    ]);
+    const derivedAta = deriveAta(walletAddress, usdcMint);
 
-    const tokenAccounts = (ataData.result?.value || []).map((a) => a.pubkey);
-    const addressesToScan = [walletAddress, ...tokenAccounts];
+    let rpcAccounts = [];
+    try {
+      const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [
+        walletAddress,
+        { mint: usdcMint },
+        { encoding: 'jsonParsed', commitment: 'confirmed' },
+      ]);
+      rpcAccounts = (ataData.result?.value || []).map((a) => a.pubkey);
+    } catch (e) {
+      gateLog('warn', 'getTokenAccountsByOwner failed, using derived ATA', { error: e.message });
+    }
+
+    const addressSet = new Set([walletAddress, ...rpcAccounts]);
+    if (derivedAta) addressSet.add(derivedAta);
+    const addressesToScan = [...addressSet];
     const seen = new Set();
     const allSignatures = [];
 
