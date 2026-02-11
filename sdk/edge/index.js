@@ -107,12 +107,16 @@ async function rpcCall(rpcUrl, method, params) {
 async function verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, usdcMint) {
   try {
     const addressesToScan = walletAta ? [walletAta] : [walletAddress];
+    gateLog('info', 'Payment verification started', { agentKey: agentKey.slice(0, 12) + '...', addressesToScan, rpcUrl, usdcMint });
+
     const seen = new Set();
     const allSignatures = [];
 
     for (const addr of addressesToScan) {
       const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50, commitment: 'confirmed' }]);
-      for (const sig of sigsData.result || []) {
+      const sigs = sigsData.result || [];
+      gateLog('info', 'Signatures fetched', { address: addr, count: sigs.length, memos: sigs.slice(0, 5).map((s) => s.memo) });
+      for (const sig of sigs) {
         if (!seen.has(sig.signature)) {
           seen.add(sig.signature);
           allSignatures.push(sig);
@@ -123,42 +127,26 @@ async function verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, 
     for (const sigInfo of allSignatures) {
       if (sigInfo.err) continue;
 
-      // Check memo field from getSignaturesForAddress (format: "[36] ag_...")
       const sigMemo = (sigInfo.memo || '').replace(/^\[\d+\]\s*/, '');
-      if (sigMemo && sigMemo.includes(agentKey)) {
-        // Memo matches — still need to verify payment amount via full tx
-        const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]);
-        const tx = txData.result;
-        if (!tx) continue;
-        const ixList = [...(tx.transaction?.message?.instructions || []), ...(tx.meta?.innerInstructions || []).flatMap((inner) => inner.instructions || [])];
-        for (const ix of ixList) {
-          if (ix.program === 'spl-token') {
-            const parsed = ix.parsed || {};
-            if (parsed.type === 'transfer' || parsed.type === 'transferChecked') {
-              const info = parsed.info || {};
-              if (parsed.type === 'transferChecked' && info.mint !== usdcMint) continue;
-              const uiAmount = info.tokenAmount?.uiAmount ?? Number.parseFloat(info.amount || '0') / 1e6;
-              if (uiAmount >= MIN_PAYMENT) return true;
-            }
-          }
-        }
-        continue;
-      }
+      const memoMatch = sigMemo && sigMemo.includes(agentKey);
 
       const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]);
       const tx = txData.result;
-      if (!tx) continue;
+      if (!tx) {
+        gateLog('warn', 'getTransaction returned null', { signature: sigInfo.signature });
+        continue;
+      }
 
       const instructions = tx.transaction?.message?.instructions || [];
       const innerInstructions = tx.meta?.innerInstructions || [];
       const allInstructions = [...instructions, ...innerInstructions.flatMap((inner) => inner.instructions || [])];
 
-      let hasMemo = false;
+      let hasMemo = memoMatch;
       let hasPayment = false;
 
       for (const ix of allInstructions) {
         if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
-          const memo = typeof ix.parsed === 'string' ? ix.parsed.replace(/^\[\d+\]\s*/, '') : '';
+          const memo = typeof ix.parsed === 'string' ? ix.parsed : '';
           if (memo.includes(agentKey)) hasMemo = true;
         }
 
@@ -173,6 +161,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, 
         }
       }
 
+      gateLog('info', 'Transaction checked', { signature: sigInfo.signature.slice(0, 12) + '...', hasMemo, hasPayment, memoFromSig: sigMemo || null });
       if (hasMemo && hasPayment) return true;
     }
   } catch (error) {
