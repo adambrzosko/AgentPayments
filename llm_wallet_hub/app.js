@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import bs58 from 'bs58';
 import { fileURLToPath } from 'url';
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -28,6 +28,7 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDC_DECIMALS = 6;
+const MEMO_PROGRAM_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const USE_POSTGRES = Boolean(DATABASE_URL);
 const { Pool } = pg;
 const pool = USE_POSTGRES ? new Pool({
@@ -342,7 +343,7 @@ async function getUsdcBalance(publicKeyString, mintAddress = getUsdcMintAddress(
   return Number(uiAmount || 0);
 }
 
-async function transferUsdc(fromSecretBase58, toAddress, amountUsdc, mintAddress = getUsdcMintAddress()) {
+async function transferUsdc(fromSecretBase58, toAddress, amountUsdc, mintAddress = getUsdcMintAddress(), memo = '') {
   if (PAYMENTS_DRY_RUN) return `dryrun_${crypto.randomUUID()}`;
 
   const fromKeypair = Keypair.fromSecretKey(bs58.decode(fromSecretBase58));
@@ -380,6 +381,16 @@ async function transferUsdc(fromSecretBase58, toAddress, amountUsdc, mintAddress
       TOKEN_PROGRAM_ID
     )
   );
+
+  if (memo) {
+    tx.add(
+      new TransactionInstruction({
+        keys: [],
+        programId: new PublicKey(MEMO_PROGRAM_ID),
+        data: Buffer.from(memo, 'utf8')
+      })
+    );
+  }
 
   const signature = await connection.sendTransaction(tx, [fromKeypair]);
   await connection.confirmTransaction(signature, 'confirmed');
@@ -611,7 +622,7 @@ app.post('/api/keys', authUser, async (req, res) => {
 
   const effectivePolicy = getPolicy(req.user, newKey);
   const baseUrl = getPublicBaseUrl(req);
-  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make USDC (SPL token on Solana) payments ONLY through this tool.\n\nEndpoint:\nPOST ${baseUrl}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountUsdc\": 0.01,\n  \"token\": \"USDC\",\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} USDC per payment, ${effectivePolicy.dailySolCap} USDC daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
+  const llmSetupInstructions = `Wallet payment tool setup (copy into your LLM):\n\nYou can make USDC (SPL token on Solana) payments ONLY through this tool.\n\nEndpoint:\nPOST ${baseUrl}/api/tool/pay\n\nHeaders:\nContent-Type: application/json\nx-wallet-tool-key: ${rawKey}\n(Optional) x-idempotency-key: <uuid>\n\nBody:\n{\n  \"recipient\": \"<solana address>\",\n  \"amountUsdc\": 0.01,\n  \"token\": \"USDC\",\n  \"memo\": \"<paywall key/challenge memo if provided>\",\n  \"reason\": \"<why payment is needed>\",\n  \"resourceUrl\": \"https://example.com\"\n}\n\nRules:\n- Pay only when required for the user's objective.\n- Keep payments as small as possible.\n- If a paywall provides a memo/key, include it exactly in \"memo\".\n- Explain each payment in one sentence.\n- Never ask for or use wallet private keys.\n- Respect limits: max ${effectivePolicy.maxSolPerPayment} USDC per payment, ${effectivePolicy.dailySolCap} USDC daily cap.${effectivePolicy.allowlistedRecipients.length ? ` Allowed recipients only: ${effectivePolicy.allowlistedRecipients.join(', ')}` : ''}`;
 
   res.json({ ...newKey, rawKey, llmSetupInstructions });
 });
@@ -653,7 +664,7 @@ app.post('/api/policy', authUser, async (req, res) => {
 app.get('/api/system-prompt', authUser, (req, res) => {
   const { model = 'gpt' } = req.query;
   const baseUrl = getPublicBaseUrl(req);
-  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountUsdc": 0.01,\n  "token": "USDC",\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${baseUrl}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
+  const prompt = `You can use a wallet payment tool for paywalled websites.\n\nRULES:\n1) Request quote/challenge first.\n2) Pay only if needed for user objective.\n3) Keep payments minimal.\n4) If paywall provides memo/key, include it exactly as memo.\n5) Give 1-line reason for each payment.\n\nTool name: wallet_pay\nInput:\n{\n  "recipient": "<solana address>",\n  "amountUsdc": 0.01,\n  "token": "USDC",\n  "memo": "<paywall memo or key>",\n  "reason": "<why needed>",\n  "resourceUrl": "https://example.com/article"\n}\n\nTool endpoint:\nPOST ${baseUrl}/api/tool/pay\nHeader: x-wallet-tool-key: <USER_TOOL_KEY>\nOptional Header: x-idempotency-key: <uuid>`;
   res.json({ model, prompt });
 });
 
@@ -664,6 +675,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
     const token = String(req.body.token || 'USDC').toUpperCase();
     const reason = String(req.body.reason || '').slice(0, 500);
     const resourceUrl = String(req.body.resourceUrl || '').slice(0, 1200);
+    const memo = String(req.body.memo || '').slice(0, 256);
     const idem = String(req.headers['x-idempotency-key'] || '').trim();
 
     if (!recipient || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'Valid recipient and amountUsdc required' });
@@ -716,7 +728,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
     }
 
     const secret58 = decryptSecret(req.user.wallet.encryptedSecret);
-    const signature = await transferUsdc(secret58, recipient, amount, getUsdcMintAddress());
+    const signature = await transferUsdc(secret58, recipient, amount, getUsdcMintAddress(), memo);
 
     const payment = {
       id: crypto.randomUUID(),
@@ -727,6 +739,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
       amountSol: amount,
       reason,
       resourceUrl,
+      memo: memo || null,
       signature,
       createdAt: new Date().toISOString()
     };
