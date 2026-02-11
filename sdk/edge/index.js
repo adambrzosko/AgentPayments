@@ -227,6 +227,9 @@ export function createEdgeGate(options = {}) {
   return async function edgeGate(request, env = {}, context = {}) {
     const effectiveEnv = envResolver ? await envResolver({ request, env, context }) : env;
     const url = new URL(request.url);
+    const browser = isBrowser(request);
+    const agentKey = request.headers.get('X-Agent-Key');
+    console.log(`[gate] ${request.method} ${url.pathname} | browser=${browser} | agent-key=${agentKey ? agentKey.slice(0, 12) + '...' : 'none'}`);
     const secret = effectiveEnv.CHALLENGE_SECRET || 'default-secret-change-me';
     const walletAddress = effectiveEnv.HOME_WALLET_ADDRESS || '';
     const debug = effectiveEnv.DEBUG !== 'false';
