@@ -30,6 +30,7 @@ npm test
 - `POST /api/signup` -> create account + wallet
 - `POST /api/login`
 - `GET /api/me` -> wallet + balance
+- `POST /api/faucet` -> top-up wallet (tries devnet airdrop, optional bot-wallet fallback)
 - `POST /api/keys` -> issue tool key
 - `GET /api/system-prompt?model=gpt|claude|gemini`
 - `POST /api/tool/pay` (header `x-wallet-tool-key`)

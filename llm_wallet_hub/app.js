@@ -13,6 +13,9 @@ const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:8787';
 const MASTER_KEY = process.env.MASTER_KEY || '';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
+const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
+const BOT_WALLET_FILE = process.env.BOT_WALLET_FILE || path.resolve(__dirname, '..', 'jsons', 'bot-wallet.json');
+const FAUCET_TOPUP_SOL = Number(process.env.FAUCET_TOPUP_SOL || 0.5);
 
 if (!MASTER_KEY && process.env.NODE_ENV !== 'test') {
   throw new Error('MASTER_KEY is required');
@@ -167,6 +170,21 @@ async function transferSol(fromSecretBase58, toAddress, amountSol) {
   return signature;
 }
 
+function getBotWalletSecret() {
+  if (BOT_WALLET_SECRET_KEY) return BOT_WALLET_SECRET_KEY;
+  if (!fs.existsSync(BOT_WALLET_FILE)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(BOT_WALLET_FILE, 'utf8'));
+    return typeof raw.secretKey === 'string' ? raw.secretKey : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDevnetRpc(url) {
+  return String(url || '').toLowerCase().includes('devnet');
+}
+
 app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), (req, res) => {
   try {
     const email = parseEmail(req.body.email);
@@ -219,6 +237,63 @@ app.post('/api/login', rateLimit('login', 30, 15 * 60 * 1000), (req, res) => {
 app.get('/api/me', authUser, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
   res.json({ id: req.user.id, email: req.user.email, walletAddress: req.user.wallet.publicKey, balanceSol, policy: req.user.policy });
+});
+
+app.post('/api/faucet', authUser, async (req, res) => {
+  try {
+    if (!isDevnetRpc(SOLANA_RPC_URL)) {
+      return res.status(400).json({ error: 'Faucet funding is devnet-only' });
+    }
+
+    const target = req.user.wallet.publicKey;
+    const amountSol = Number.isFinite(Number(req.body?.amountSol)) ? Number(req.body.amountSol) : FAUCET_TOPUP_SOL;
+    if (!Number.isFinite(amountSol) || amountSol <= 0 || amountSol > 2) {
+      return res.status(400).json({ error: 'amountSol must be between 0 and 2' });
+    }
+
+    const amountLamports = Math.round(amountSol * LAMPORTS_PER_SOL);
+
+    if (PAYMENTS_DRY_RUN) {
+      return res.json({
+        ok: true,
+        dryRun: true,
+        method: 'dry-run',
+        amountSol,
+        walletAddress: target,
+        signature: `dryrun_${crypto.randomUUID()}`
+      });
+    }
+
+    try {
+      const airdropSig = await connection.requestAirdrop(new PublicKey(target), amountLamports);
+      await connection.confirmTransaction(airdropSig, 'confirmed');
+      const balanceSol = await getBalanceSol(target);
+      return res.json({ ok: true, method: 'airdrop', amountSol, walletAddress: target, signature: airdropSig, balanceSol });
+    } catch (airdropErr) {
+      const botSecret = getBotWalletSecret();
+      if (!botSecret) {
+        return res.status(503).json({
+          error: 'Airdrop failed and bot wallet fallback is not configured',
+          details: String(airdropErr?.message || airdropErr)
+        });
+      }
+
+      const fallbackSig = await transferSol(botSecret, target, amountSol);
+      const balanceSol = await getBalanceSol(target);
+      return res.json({
+        ok: true,
+        method: 'bot-wallet-fallback',
+        amountSol,
+        walletAddress: target,
+        signature: fallbackSig,
+        balanceSol,
+        note: 'Airdrop failed, funded from bot wallet instead',
+        airdropError: String(airdropErr?.message || airdropErr)
+      });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/keys', authUser, (req, res) => {

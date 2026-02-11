@@ -36,9 +36,13 @@
 
   <div class="card">
     <h3>Wallet</h3>
-    <button onclick="loadMe()">Refresh Wallet</button>
+    <div class="row">
+      <button onclick="loadMe()">Refresh Wallet</button>
+      <button onclick="requestFaucetTopup()">Request Faucet Top-up (0.5 SOL)</button>
+    </div>
     <pre id="me">not loaded</pre>
-    <p class="muted">Fund this wallet by sending SOL on devnet from another wallet to the walletAddress above.</p>
+    <pre id="faucetResult">faucet result: none</pre>
+    <p class="muted">Top-up tries devnet faucet first; if rate-limited, server can optionally fallback to bot wallet transfer.</p>
   </div>
 
   <div class="card">
@@ -125,6 +129,17 @@ async function createKey() {
   });
   const data = await r.json();
   newKey.textContent = JSON.stringify(data, null, 2);
+}
+
+async function requestFaucetTopup() {
+  const r = await fetch('/api/faucet', {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ amountSol: 0.5 })
+  });
+  const data = await r.json();
+  faucetResult.textContent = JSON.stringify(data, null, 2);
+  if (r.ok) await loadMe();
 }
 
 async function loadPrompt() {
