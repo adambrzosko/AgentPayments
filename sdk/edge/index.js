@@ -104,78 +104,9 @@ async function rpcCall(rpcUrl, method, params) {
   return resp.json();
 }
 
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const ED25519_P = 2n ** 255n - 19n;
-const ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
-const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
-const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-
-function b58decode(s) {
-  let n = 0n;
-  for (const c of s) n = n * 58n + BigInt(B58.indexOf(c));
-  const out = [];
-  while (n > 0n) { out.unshift(Number(n & 0xffn)); n >>= 8n; }
-  for (const c of s) { if (c !== '1') break; out.unshift(0); }
-  while (out.length < 32) out.unshift(0);
-  return new Uint8Array(out);
-}
-
-function b58encode(bytes) {
-  let n = 0n;
-  for (const b of bytes) n = n * 256n + BigInt(b);
-  let s = '';
-  while (n > 0n) { s = B58[Number(n % 58n)] + s; n /= 58n; }
-  for (const b of bytes) { if (b !== 0) break; s = '1' + s; }
-  return s;
-}
-
-function modpow(b, e, m) {
-  let r = 1n; b = ((b % m) + m) % m;
-  while (e > 0n) { if (e & 1n) r = r * b % m; e >>= 1n; b = b * b % m; }
-  return r;
-}
-
-function isOnCurve(bytes) {
-  let y = 0n;
-  for (let i = 0; i < 32; i++) y += BigInt(i === 31 ? bytes[i] & 0x7f : bytes[i]) << BigInt(8 * i);
-  if (y >= ED25519_P) return false;
-  const y2 = y * y % ED25519_P;
-  const x2 = (y2 - 1n + ED25519_P) % ED25519_P * modpow((1n + ED25519_D * y2) % ED25519_P, ED25519_P - 2n, ED25519_P) % ED25519_P;
-  if (x2 === 0n) return true;
-  return modpow(x2, (ED25519_P - 1n) / 2n, ED25519_P) === 1n;
-}
-
-async function deriveAta(owner, mint) {
-  const seeds = [b58decode(owner), b58decode(TOKEN_PROGRAM), b58decode(mint)];
-  const programId = b58decode(ASSOCIATED_TOKEN_PROGRAM);
-  const suffix = new TextEncoder().encode('ProgramDerivedAddress');
-  for (let bump = 255; bump >= 0; bump--) {
-    const parts = [...seeds, new Uint8Array([bump]), programId, suffix];
-    const len = parts.reduce((s, p) => s + p.length, 0);
-    const buf = new Uint8Array(len);
-    let off = 0;
-    for (const p of parts) { buf.set(p, off); off += p.length; }
-    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
-    if (!isOnCurve(hash)) return b58encode(hash);
-  }
-  return null;
-}
-
-async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
+async function verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, usdcMint) {
   try {
-    const derivedAta = await deriveAta(walletAddress, usdcMint);
-
-    let rpcAccounts = [];
-    try {
-      const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [walletAddress, { mint: usdcMint }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
-      rpcAccounts = (ataData.result?.value || []).map((entry) => entry.pubkey);
-    } catch (e) {
-      gateLog('warn', 'getTokenAccountsByOwner failed, using derived ATA', { error: e.message });
-    }
-
-    const addressSet = new Set([walletAddress, ...rpcAccounts]);
-    if (derivedAta) addressSet.add(derivedAta);
-    const addressesToScan = [...addressSet];
+    const addressesToScan = walletAta ? [walletAta] : [walletAddress];
     const seen = new Set();
     const allSignatures = [];
 
@@ -192,6 +123,28 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
     for (const sigInfo of allSignatures) {
       if (sigInfo.err) continue;
 
+      // Check memo field from getSignaturesForAddress (format: "[36] ag_...")
+      const sigMemo = (sigInfo.memo || '').replace(/^\[\d+\]\s*/, '');
+      if (sigMemo && sigMemo.includes(agentKey)) {
+        // Memo matches — still need to verify payment amount via full tx
+        const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]);
+        const tx = txData.result;
+        if (!tx) continue;
+        const ixList = [...(tx.transaction?.message?.instructions || []), ...(tx.meta?.innerInstructions || []).flatMap((inner) => inner.instructions || [])];
+        for (const ix of ixList) {
+          if (ix.program === 'spl-token') {
+            const parsed = ix.parsed || {};
+            if (parsed.type === 'transfer' || parsed.type === 'transferChecked') {
+              const info = parsed.info || {};
+              if (parsed.type === 'transferChecked' && info.mint !== usdcMint) continue;
+              const uiAmount = info.tokenAmount?.uiAmount ?? Number.parseFloat(info.amount || '0') / 1e6;
+              if (uiAmount >= MIN_PAYMENT) return true;
+            }
+          }
+        }
+        continue;
+      }
+
       const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]);
       const tx = txData.result;
       if (!tx) continue;
@@ -205,7 +158,7 @@ async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
 
       for (const ix of allInstructions) {
         if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
-          const memo = typeof ix.parsed === 'string' ? ix.parsed : '';
+          const memo = typeof ix.parsed === 'string' ? ix.parsed.replace(/^\[\d+\]\s*/, '') : '';
           if (memo.includes(agentKey)) hasMemo = true;
         }
 
@@ -299,6 +252,7 @@ export function createEdgeGate(options = {}) {
       gateLog('error', 'Invalid HOME_WALLET_ADDRESS', { walletAddress });
       return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: invalid wallet address.' }, 500);
     }
+    const walletAta = effectiveEnv.HOME_WALLET_ATA || '';
     const rpcUrl = effectiveEnv.SOLANA_RPC_URL || (debug ? RPC_DEVNET : RPC_MAINNET);
     const usdcMint = effectiveEnv.USDC_MINT || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
 
@@ -383,7 +337,7 @@ export function createEdgeGate(options = {}) {
       if (getCachedPayment(agentKey) === true) {
         return fetchUpstream(request, effectiveEnv, context);
       }
-      const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint);
+      const paid = await verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, usdcMint);
       if (paid) setCachedPayment(agentKey, true);
       if (!paid) {
         return jsonResponse({
