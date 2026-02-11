@@ -11,6 +11,8 @@
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     code { background: #f7f7f7; padding: 2px 6px; border-radius: 6px; }
     .muted { color: #666; font-size: 0.9rem; }
+    .balance { font-size: 1.1rem; margin: 8px 0 12px; }
+    .balance code { font-size: 1.05rem; }
   </style>
 </head>
 <body>
@@ -36,6 +38,7 @@
 
   <div class="card">
     <h3>Wallet</h3>
+    <p class="balance">Current balance: <code id="balanceDisplay">unknown</code></p>
     <div class="row">
       <button onclick="loadMe()">Refresh Wallet</button>
       <button onclick="requestFaucetTopup()">Request Faucet Top-up (0.5 SOL)</button>
@@ -80,6 +83,18 @@ function headers() {
   };
 }
 
+function updateBalanceDisplay(data) {
+  if (typeof data?.balanceSol === 'number') {
+    balanceDisplay.textContent = `${data.balanceSol.toFixed(6)} SOL`;
+    return;
+  }
+  if (typeof data?.user?.walletAddress === 'string') {
+    balanceDisplay.textContent = '0.000000 SOL';
+    return;
+  }
+  balanceDisplay.textContent = 'unknown';
+}
+
 async function signup() {
   const r = await fetch('/api/signup', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -91,6 +106,8 @@ async function signup() {
     token.textContent = sessionToken;
   }
   me.textContent = JSON.stringify(data, null, 2);
+  updateBalanceDisplay(data);
+  if (data.sessionToken) await loadMe();
 }
 
 async function login() {
@@ -104,12 +121,15 @@ async function login() {
     token.textContent = sessionToken;
   }
   me.textContent = JSON.stringify(data, null, 2);
+  updateBalanceDisplay(data);
+  if (data.sessionToken) await loadMe();
 }
 
 async function loadMe() {
   const r = await fetch('/api/me', { headers: headers() });
   const data = await r.json();
   me.textContent = JSON.stringify(data, null, 2);
+  updateBalanceDisplay(data);
 }
 
 async function createKey() {
