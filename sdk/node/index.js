@@ -89,21 +89,35 @@ function derivePaymentMemo(agentKey, secret) {
   return `gm_${sig.slice(0, 16)}`;
 }
 
+function normalizeVerifyEndpoint(verifyUrl) {
+  const trimmed = String(verifyUrl || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (trimmed.endsWith('/verify')) return trimmed;
+  return `${trimmed}/verify`;
+}
+
 async function verifyPaymentViaBackend(memo, verifyUrl, apiKey) {
-  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}`;
-  const resp = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${apiKey}` },
-  });
-  if (!resp.ok) {
-    gateLog('error', 'Backend verification request failed', { status: resp.status });
+  const endpoint = normalizeVerifyEndpoint(verifyUrl);
+  const url = `${endpoint}?memo=${encodeURIComponent(memo)}`;
+  try {
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) {
+      gateLog('error', 'Backend verification request failed', { status: resp.status, url });
+      return false;
+    }
+    const data = await resp.json();
+    return data.paid === true;
+  } catch (err) {
+    gateLog('error', 'Backend verification request errored', { url, error: String(err?.message || err) });
     return false;
   }
-  const data = await resp.json();
-  return data.paid === true;
 }
 
 async function fetchMerchantConfig(verifyUrl, apiKey) {
-  const baseUrl = verifyUrl.replace(/\/verify\/?$/, '');
+  const endpoint = normalizeVerifyEndpoint(verifyUrl);
+  const baseUrl = endpoint.replace(/\/verify$/, '');
   const resp = await fetch(`${baseUrl}/merchants/me`, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });

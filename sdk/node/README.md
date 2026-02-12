@@ -18,6 +18,10 @@ app.use(agentPaymentsGate({
 }));
 ```
 
+`AGENTPAYMENTS_VERIFY_URL` accepts either:
+- verify endpoint: `https://verify.example.com/verify`
+- base service URL: `https://verify.example.com` (the SDK will append `/verify`)
+
 ## Notes
 - Wallet address and network are fetched automatically from the verify service.
 - This is implementation #1 of the 80/20 roadmap.

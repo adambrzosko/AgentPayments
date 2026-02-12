@@ -45,7 +45,7 @@ export default gate;
 
 ## Environment variables
 - `CHALLENGE_SECRET` — HMAC secret for signing agent keys and cookies
-- `AGENTPAYMENTS_VERIFY_URL` — URL of the verify service
+- `AGENTPAYMENTS_VERIFY_URL` — verify endpoint URL (or base service URL; SDK appends `/verify` automatically)
 - `AGENTPAYMENTS_API_KEY` — Per-merchant API key
 
 Wallet address and network are fetched automatically from the verify service.
