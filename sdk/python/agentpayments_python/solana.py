@@ -58,18 +58,15 @@ def derive_payment_memo(agent_key: str, secret: str) -> str:
 
 
 def verify_payment_via_backend(
-    memo: str, wallet_address: str, verify_url: str, api_key: str, *, cache_key: str = ""
+    memo: str, verify_url: str, api_key: str, *, cache_key: str = ""
 ) -> bool:
     _cache_key = cache_key or memo
     if _payment_cache.get(_cache_key):
         return True
-    if not is_valid_solana_address(wallet_address):
-        logger.error("[gate] Invalid wallet address: %s", wallet_address)
-        return False
     try:
         resp = requests.get(
             verify_url,
-            params={"memo": memo, "wallet": wallet_address},
+            params={"memo": memo},
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
@@ -81,3 +78,23 @@ def verify_payment_via_backend(
     except Exception:
         logger.exception("[gate] Backend verification error")
     return False
+
+
+_merchant_config_cache: dict[str, dict] = {}
+
+
+def fetch_merchant_config(verify_url: str, api_key: str) -> dict:
+    """Fetch wallet address and network from verify_service. Cached per api_key."""
+    cached = _merchant_config_cache.get(api_key)
+    if cached:
+        return cached
+    base_url = re.sub(r"/verify/?$", "", verify_url)
+    resp = requests.get(
+        f"{base_url}/merchants/me",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    config = resp.json()
+    _merchant_config_cache[api_key] = config
+    return config

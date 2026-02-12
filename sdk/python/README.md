@@ -14,6 +14,10 @@ MIDDLEWARE = [
   "django.middleware.security.SecurityMiddleware",
   "agentpayments_python.django_adapter.GateMiddleware",
 ]
+
+CHALLENGE_SECRET = os.environ.get("CHALLENGE_SECRET", "default-secret-change-me")
+AGENTPAYMENTS_VERIFY_URL = os.environ.get("AGENTPAYMENTS_VERIFY_URL", "")
+AGENTPAYMENTS_API_KEY = os.environ.get("AGENTPAYMENTS_API_KEY", "")
 ```
 
 ## FastAPI usage
@@ -25,8 +29,8 @@ app = FastAPI()
 app.add_middleware(
     AgentPaymentsASGIMiddleware,
     challenge_secret="...",
-    home_wallet_address="...",
-    debug=True,
+    verify_url="https://...",
+    gate_api_secret="vk_...",
 )
 
 @app.post('/__challenge/verify')
@@ -40,5 +44,7 @@ from flask import Flask
 from agentpayments_python.flask_adapter import register_agentpayments
 
 app = Flask(__name__)
-register_agentpayments(app, challenge_secret="...", home_wallet_address="...", debug=True)
+register_agentpayments(app, challenge_secret="...", verify_url="https://...", gate_api_secret="vk_...")
 ```
+
+Wallet address and network are fetched automatically from the verify service.

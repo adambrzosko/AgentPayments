@@ -86,7 +86,7 @@ async function signup() {
 
     document.getElementById('api-key').textContent = data.apiKey;
     document.getElementById('env-snippet').textContent =
-      `AGENTPAYMENTS_VERIFY_URL=${verifyUrl}\nAGENTPAYMENTS_API_KEY=${data.apiKey}`;
+      `CHALLENGE_SECRET=change-me-to-a-strong-secret\nAGENTPAYMENTS_VERIFY_URL=${verifyUrl}/verify\nAGENTPAYMENTS_API_KEY=${data.apiKey}`;
     document.getElementById('signup-form').style.display = 'none';
     document.getElementById('result').style.display = 'block';
   } catch (e) {

@@ -147,7 +147,8 @@ app.get('/verify', async (req, res) => {
 
 app.post('/merchants/signup', async (req, res) => {
   try {
-    const name = String(req.body.name || '').trim().slice(0, 200);
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const name = String(body.name || '').trim().slice(0, 200);
     if (!name) return res.status(400).json({ error: 'name is required' });
 
     const id = crypto.randomUUID();
@@ -192,6 +193,31 @@ app.post('/merchants', async (req, res) => {
     res.json({ id, name, apiKey: key.raw });
   } catch (e) {
     console.error('create merchant error:', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /merchants/me  (per-merchant key auth)
+// Returns wallet address and network so SDKs can auto-configure.
+// ---------------------------------------------------------------------------
+
+app.get('/merchants/me', async (req, res) => {
+  try {
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing Authorization header' });
+    }
+    const apiKey = auth.slice(7);
+    const merchant = await lookupMerchant(apiKey);
+    if (!merchant) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    const network = SOLANA_RPC_URL.includes('devnet') ? 'devnet' : 'mainnet';
+    res.json({ walletAddress: HOME_WALLET_ADDRESS, network });
+  } catch (e) {
+    console.error('merchants/me error:', e);
     res.status(500).json({ error: 'Internal error' });
   }
 });

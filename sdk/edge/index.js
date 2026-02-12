@@ -8,7 +8,6 @@ const MAX_KEY_LENGTH = 64;
 const MAX_NONCE_LENGTH = 128;
 const MAX_RETURN_TO_LENGTH = 2048;
 const MAX_FP_LENGTH = 128;
-const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const PAYMENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const PAYMENT_CACHE_MAX = 1000;
 
@@ -94,8 +93,8 @@ async function derivePaymentMemo(agentKey, secret) {
   return `gm_${sig.slice(0, 16)}`;
 }
 
-async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
-  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
+async function verifyPaymentViaBackend(memo, verifyUrl, apiKey) {
+  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}`;
   const resp = await fetch(url, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });
@@ -105,6 +104,23 @@ async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
   }
   const data = await resp.json();
   return data.paid === true;
+}
+
+const merchantConfigCache = new Map();
+
+async function fetchMerchantConfig(verifyUrl, apiKey) {
+  const cached = merchantConfigCache.get(apiKey);
+  if (cached) return cached;
+  const baseUrl = verifyUrl.replace(/\/verify\/?$/, '');
+  const resp = await fetch(`${baseUrl}/merchants/me`, {
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch merchant config: HTTP ${resp.status}`);
+  }
+  const config = await resp.json();
+  merchantConfigCache.set(apiKey, config);
+  return config;
 }
 
 function getCookie(request, name) {
@@ -167,21 +183,16 @@ export function createEdgeGate(options = {}) {
     const agentKey = request.headers.get('X-Agent-Key');
     console.log(`[gate] ${request.method} ${url.pathname} | browser=${browser} | agent-key=${agentKey ? agentKey.slice(0, 12) + '...' : 'none'}`);
     const secret = effectiveEnv.CHALLENGE_SECRET || 'default-secret-change-me';
-    const walletAddress = effectiveEnv.HOME_WALLET_ADDRESS || '';
-    const debug = effectiveEnv.DEBUG !== 'false';
     if (secret === 'default-secret-change-me') {
-      if (debug) {
-        gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
-      } else {
-        return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: insecure default secret.' }, 500);
-      }
-    }
-    if (walletAddress && !BASE58_RE.test(walletAddress)) {
-      gateLog('error', 'Invalid HOME_WALLET_ADDRESS', { walletAddress });
-      return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: invalid wallet address.' }, 500);
+      gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
     }
     const verifyUrl = effectiveEnv.AGENTPAYMENTS_VERIFY_URL || '';
     const apiKey = effectiveEnv.AGENTPAYMENTS_API_KEY || '';
+
+    async function getMerchantConfig() {
+      if (!verifyUrl || !apiKey) return null;
+      return fetchMerchantConfig(verifyUrl, apiKey);
+    }
 
     if (isPublicPath(url.pathname, publicPathAllowlist)) {
       return fetchUpstream(request, effectiveEnv, context);
@@ -232,20 +243,23 @@ export function createEdgeGate(options = {}) {
       const agentKey = request.headers.get('X-Agent-Key');
 
       if (!agentKey) {
+        const mc = await getMerchantConfig();
+        if (!mc) return jsonResponse({ error: 'server_error', message: 'Payment verification not configured.' }, 500);
         const newKey = await generateAgentKey(secret);
         const paymentMemo = await derivePaymentMemo(newKey, secret);
+        const networkLabel = mc.network === 'devnet' ? 'devnet' : 'mainnet';
         return jsonResponse({
           error: 'payment_required',
           message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.',
           your_key: newKey,
           payment: {
             chain: 'solana',
-            network: debug ? 'devnet' : 'mainnet-beta',
+            network: mc.network === 'devnet' ? 'devnet' : 'mainnet-beta',
             token: 'USDC',
             amount: String(minPayment),
-            wallet_address: walletAddress,
+            wallet_address: mc.walletAddress,
             memo: paymentMemo,
-            instructions: `Send ${minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
+            instructions: `Send ${minPayment} USDC on Solana ${networkLabel} to ${mc.walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
           },
         }, 402);
       }
@@ -258,10 +272,6 @@ export function createEdgeGate(options = {}) {
         }, 403);
       }
 
-      if (!walletAddress) {
-        return jsonResponse({ error: 'server_error', message: 'Payment verification unavailable.' }, 500);
-      }
-
       if (getCachedPayment(agentKey) === true) {
         return fetchUpstream(request, effectiveEnv, context);
       }
@@ -271,19 +281,21 @@ export function createEdgeGate(options = {}) {
       }
 
       const paymentMemo = await derivePaymentMemo(agentKey, secret);
-      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, apiKey);
+      const paid = await verifyPaymentViaBackend(paymentMemo, verifyUrl, apiKey);
       if (paid) setCachedPayment(agentKey, true);
       if (!paid) {
+        const mc = await getMerchantConfig();
+        if (!mc) return jsonResponse({ error: 'server_error', message: 'Payment verification not configured.' }, 500);
         return jsonResponse({
           error: 'payment_required',
           message: 'Key is valid but payment has not been verified yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
           payment: {
             chain: 'solana',
-            network: debug ? 'devnet' : 'mainnet-beta',
+            network: mc.network === 'devnet' ? 'devnet' : 'mainnet-beta',
             token: 'USDC',
             amount: String(minPayment),
-            wallet_address: walletAddress,
+            wallet_address: mc.walletAddress,
             memo: paymentMemo,
           },
         }, 402);
@@ -291,7 +303,7 @@ export function createEdgeGate(options = {}) {
 
       const ua = request.headers.get('user-agent') || 'unknown';
       const ip = getClientIp({ request, env: effectiveEnv, context });
-      gateLog('info', 'Payment verified - agent access granted', { network: debug ? 'devnet' : 'mainnet', key: agentKey.slice(0, 12) + '...', ua, ip, path: url.pathname });
+      gateLog('info', 'Payment verified - agent access granted', { network: 'verified', key: agentKey.slice(0, 12) + '...', ua, ip, path: url.pathname });
       return fetchUpstream(request, effectiveEnv, context);
     }
 

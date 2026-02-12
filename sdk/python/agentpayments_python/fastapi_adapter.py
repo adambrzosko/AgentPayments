@@ -12,7 +12,7 @@ from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_co
 from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter
-from .solana import MIN_PAYMENT, derive_payment_memo, is_valid_solana_address, verify_payment_via_backend
+from .solana import MIN_PAYMENT, derive_payment_memo, fetch_merchant_config, verify_payment_via_backend
 
 import json as _json
 from pathlib import Path as _Path
@@ -23,20 +23,13 @@ MAX_FP_LENGTH = _constants["MAX_FP_LENGTH"]
 
 
 class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, verify_url: str = "", gate_api_secret: str = "", debug: bool = True):
+    def __init__(self, app, *, challenge_secret: str, verify_url: str = "", gate_api_secret: str = ""):
         super().__init__(app)
         if challenge_secret == "default-secret-change-me":
             import logging
             logger = logging.getLogger("agentpayments")
-            if debug:
-                logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
-            else:
-                raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
-        if home_wallet_address and not is_valid_solana_address(home_wallet_address):
-            raise ValueError(f"HOME_WALLET_ADDRESS '{home_wallet_address}' is not a valid Solana public key (expected 32-44 base58 characters).")
+            logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
         self.challenge_secret = challenge_secret
-        self.home_wallet_address = home_wallet_address
-        self.debug = debug
         self.verify_url = verify_url
         self.gate_api_secret = gate_api_secret
 
@@ -50,33 +43,35 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
 
         if not is_browser_from_headers(dict(request.headers)):
             agent_key = request.headers.get("x-agent-key")
-            network = "devnet" if self.debug else "mainnet-beta"
             if not agent_key:
+                if not self.verify_url or not self.gate_api_secret:
+                    return JSONResponse({"error": "server_error", "message": "Payment verification not configured."}, status_code=500)
+                mc = fetch_merchant_config(self.verify_url, self.gate_api_secret)
                 new_key = generate_agent_key(self.challenge_secret)
                 payment_memo = derive_payment_memo(new_key, self.challenge_secret)
+                network = "devnet" if mc.get("network") == "devnet" else "mainnet-beta"
                 return JSONResponse({
                     "error": "payment_required",
                     "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.",
                     "your_key": new_key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": payment_memo},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": mc.get("walletAddress", ""), "memo": payment_memo},
                 }, status_code=402)
 
             if not is_valid_agent_key(agent_key, self.challenge_secret):
                 return JSONResponse({"error": "forbidden", "message": "Invalid API key."}, status_code=403)
 
-            if not self.home_wallet_address:
-                return JSONResponse({"error": "server_error", "message": "Payment verification unavailable."}, status_code=500)
-
             if not self.verify_url or not self.gate_api_secret:
                 return JSONResponse({"error": "server_error", "message": "Payment verification not configured."}, status_code=500)
 
             payment_memo = derive_payment_memo(agent_key, self.challenge_secret)
-            if not verify_payment_via_backend(payment_memo, self.home_wallet_address, self.verify_url, self.gate_api_secret, cache_key=agent_key):
+            if not verify_payment_via_backend(payment_memo, self.verify_url, self.gate_api_secret, cache_key=agent_key):
+                mc = fetch_merchant_config(self.verify_url, self.gate_api_secret)
+                network = "devnet" if mc.get("network") == "devnet" else "mainnet-beta"
                 return JSONResponse({
                     "error": "payment_required",
                     "message": "Key is valid but payment has not been verified yet.",
                     "your_key": agent_key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": payment_memo},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": mc.get("walletAddress", ""), "memo": payment_memo},
                 }, status_code=402)
 
             return await call_next(request)

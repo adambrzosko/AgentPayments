@@ -11,7 +11,7 @@ from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_co
 from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter
-from .solana import MIN_PAYMENT, derive_payment_memo, is_valid_solana_address, verify_payment_via_backend
+from .solana import MIN_PAYMENT, derive_payment_memo, fetch_merchant_config, verify_payment_via_backend
 
 import json as _json
 from pathlib import Path as _Path
@@ -30,17 +30,9 @@ class GateMiddleware:
         if secret == "default-secret-change-me":
             import logging
             logger = logging.getLogger("agentpayments")
-            if settings.DEBUG:
-                logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
-            else:
-                raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
-        wallet_address = settings.HOME_WALLET_ADDRESS
-        if wallet_address and not is_valid_solana_address(wallet_address):
-            raise ValueError(f"HOME_WALLET_ADDRESS '{wallet_address}' is not a valid Solana public key (expected 32-44 base58 characters).")
-        debug = settings.DEBUG
+            logger.warning("Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.")
         _verify_url = getattr(settings, "AGENTPAYMENTS_VERIFY_URL", "")
         _api_key = getattr(settings, "AGENTPAYMENTS_API_KEY", "")
-        network = "devnet" if debug else "mainnet-beta"
 
         pathname = request.path
         if is_public_path(pathname):
@@ -56,8 +48,12 @@ class GateMiddleware:
         if not is_browser_from_headers(headers):
             agent_key = request.META.get("HTTP_X_AGENT_KEY")
             if not agent_key:
+                if not _verify_url or not _api_key:
+                    return JsonResponse({"error": "server_error", "message": "Payment verification not configured."}, status=500)
+                mc = fetch_merchant_config(_verify_url, _api_key)
                 new_key = generate_agent_key(secret)
                 payment_memo = derive_payment_memo(new_key, secret)
+                network = "devnet" if mc.get("network") == "devnet" else "mainnet-beta"
                 return JsonResponse({
                     "error": "payment_required",
                     "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.",
@@ -67,7 +63,7 @@ class GateMiddleware:
                         "network": network,
                         "token": "USDC",
                         "amount": str(MIN_PAYMENT),
-                        "wallet_address": wallet_address,
+                        "wallet_address": mc.get("walletAddress", ""),
                         "memo": payment_memo,
                     },
                 }, status=402, json_dumps_params={"indent": 2})
@@ -75,15 +71,14 @@ class GateMiddleware:
             if not is_valid_agent_key(agent_key, secret):
                 return JsonResponse({"error": "forbidden", "message": "Invalid API key. Keys must be issued by this server."}, status=403)
 
-            if not wallet_address:
-                return JsonResponse({"error": "server_error", "message": "Payment verification unavailable."}, status=500)
-
             if not _verify_url or not _api_key:
                 return JsonResponse({"error": "server_error", "message": "Payment verification not configured."}, status=500)
 
             payment_memo = derive_payment_memo(agent_key, secret)
-            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _api_key, cache_key=agent_key)
+            paid = verify_payment_via_backend(payment_memo, _verify_url, _api_key, cache_key=agent_key)
             if not paid:
+                mc = fetch_merchant_config(_verify_url, _api_key)
+                network = "devnet" if mc.get("network") == "devnet" else "mainnet-beta"
                 return JsonResponse({
                     "error": "payment_required",
                     "message": "Key is valid but payment has not been verified yet.",
@@ -93,7 +88,7 @@ class GateMiddleware:
                         "network": network,
                         "token": "USDC",
                         "amount": str(MIN_PAYMENT),
-                        "wallet_address": wallet_address,
+                        "wallet_address": mc.get("walletAddress", ""),
                         "memo": payment_memo,
                     },
                 }, status=402, json_dumps_params={"indent": 2})

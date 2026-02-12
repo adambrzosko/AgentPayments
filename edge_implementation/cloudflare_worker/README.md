@@ -19,8 +19,8 @@ That keeps this deployment Stripe-style: small wrapper + config, with shared log
    - `npm install`
 2. In this folder, set secrets/vars:
    - `wrangler secret put CHALLENGE_SECRET`
-   - `wrangler secret put HOME_WALLET_ADDRESS`
-   - Optional vars: `SOLANA_RPC_URL`, `USDC_MINT`, `DEBUG`
+   - `wrangler secret put AGENTPAYMENTS_API_KEY`
+   - Set `AGENTPAYMENTS_VERIFY_URL` in `wrangler.toml`
 3. Run locally:
    - `npm run dev`
 

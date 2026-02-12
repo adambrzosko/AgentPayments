@@ -34,13 +34,18 @@ import { createVercelEdgeGate } from '@agentpayments/edge/vercel';
 const gate = createVercelEdgeGate({
   env: {
     CHALLENGE_SECRET: process.env.CHALLENGE_SECRET,
-    HOME_WALLET_ADDRESS: process.env.HOME_WALLET_ADDRESS,
-    SOLANA_RPC_URL: process.env.SOLANA_RPC_URL,
-    USDC_MINT: process.env.USDC_MINT,
-    DEBUG: process.env.DEBUG,
+    AGENTPAYMENTS_VERIFY_URL: process.env.AGENTPAYMENTS_VERIFY_URL,
+    AGENTPAYMENTS_API_KEY: process.env.AGENTPAYMENTS_API_KEY,
   },
   upstreamNext: () => NextResponse.next(),
 });
 
 export default gate;
 ```
+
+## Environment variables
+- `CHALLENGE_SECRET` — HMAC secret for signing agent keys and cookies
+- `AGENTPAYMENTS_VERIFY_URL` — URL of the verify service
+- `AGENTPAYMENTS_API_KEY` — Per-merchant API key
+
+Wallet address and network are fetched automatically from the verify service.

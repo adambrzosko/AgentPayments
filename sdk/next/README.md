@@ -19,10 +19,10 @@ export const config = {
 
 ## Environment variables
 - `CHALLENGE_SECRET`
-- `HOME_WALLET_ADDRESS`
-- `SOLANA_RPC_URL` (optional)
-- `USDC_MINT` (optional)
-- `DEBUG` (`true`/`false`)
+- `AGENTPAYMENTS_VERIFY_URL`
+- `AGENTPAYMENTS_API_KEY`
+
+Wallet address and network are fetched automatically from the verify service.
 
 ## Notes
 - This package is implementation #4 in the 80/20 roadmap.

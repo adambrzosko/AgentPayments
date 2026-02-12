@@ -4,7 +4,6 @@ const {
   MIN_PAYMENT,
   MAX_KEY_LENGTH, MAX_NONCE_LENGTH, MAX_RETURN_TO_LENGTH, MAX_FP_LENGTH,
 } = require('../constants.json');
-const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const PAYMENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const PAYMENT_CACHE_MAX = 1000;
 
@@ -90,8 +89,8 @@ function derivePaymentMemo(agentKey, secret) {
   return `gm_${sig.slice(0, 16)}`;
 }
 
-async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
-  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
+async function verifyPaymentViaBackend(memo, verifyUrl, apiKey) {
+  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}`;
   const resp = await fetch(url, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });
@@ -101,6 +100,17 @@ async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
   }
   const data = await resp.json();
   return data.paid === true;
+}
+
+async function fetchMerchantConfig(verifyUrl, apiKey) {
+  const baseUrl = verifyUrl.replace(/\/verify\/?$/, '');
+  const resp = await fetch(`${baseUrl}/merchants/me`, {
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch merchant config: HTTP ${resp.status}`);
+  }
+  return resp.json();
 }
 
 function getCookie(req, name) {
@@ -179,28 +189,25 @@ function json(res, status, body) {
 function agentPaymentsGate(config = {}) {
   const {
     challengeSecret,
-    homeWalletAddress,
     verifyUrl,
     apiKey,
-    debug = process.env.DEBUG !== 'false',
   } = config;
 
   const secret = challengeSecret || 'default-secret-change-me';
   if (secret === 'default-secret-change-me') {
-    if (debug) {
-      gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
-    } else {
-      throw new Error('[gate] CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.');
-    }
+    gateLog('warn', 'Using default CHALLENGE_SECRET. Set a strong secret before deploying to production.');
   }
-  const walletAddress = homeWalletAddress || '';
-  if (walletAddress && !BASE58_RE.test(walletAddress)) {
-    throw new Error(`[gate] HOME_WALLET_ADDRESS "${walletAddress}" is not a valid Solana public key (expected 32-44 base58 characters).`);
-  }
-  const network = debug ? 'devnet' : 'mainnet-beta';
   const paymentCache = new PaymentCache();
   const rateLimiter = new RateLimiter();
   setInterval(() => rateLimiter.cleanup(), 60000).unref();
+
+  let merchantConfig = null;
+  async function getMerchantConfig() {
+    if (merchantConfig) return merchantConfig;
+    if (!verifyUrl || !apiKey) return null;
+    merchantConfig = await fetchMerchantConfig(verifyUrl, apiKey);
+    return merchantConfig;
+  }
 
   return async function agentPaymentsGateMiddleware(req, res, next) {
     const pathname = req.path;
@@ -251,20 +258,23 @@ function agentPaymentsGate(config = {}) {
       const agentKey = req.get('X-Agent-Key');
 
       if (!agentKey) {
+        const mc = await getMerchantConfig();
+        if (!mc) return json(res, 500, { error: 'server_error', message: 'Payment verification not configured.' });
         const newKey = generateAgentKey(secret);
         const paymentMemo = derivePaymentMemo(newKey, secret);
+        const networkLabel = mc.network === 'devnet' ? 'devnet' : 'mainnet';
         return json(res, 402, {
           error: 'payment_required',
           message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.',
           your_key: newKey,
           payment: {
             chain: 'solana',
-            network,
+            network: mc.network === 'devnet' ? 'devnet' : 'mainnet-beta',
             token: 'USDC',
             amount: String(MIN_PAYMENT),
-            wallet_address: walletAddress,
+            wallet_address: mc.walletAddress,
             memo: paymentMemo,
-            instructions: `Send ${MIN_PAYMENT} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
+            instructions: `Send ${MIN_PAYMENT} USDC on Solana ${networkLabel} to ${mc.walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
           },
         });
       }
@@ -277,10 +287,6 @@ function agentPaymentsGate(config = {}) {
         });
       }
 
-      if (!walletAddress) {
-        return json(res, 500, { error: 'server_error', message: 'Payment verification unavailable.' });
-      }
-
       const cached = paymentCache.get(agentKey);
       if (cached === true) return next();
 
@@ -289,19 +295,21 @@ function agentPaymentsGate(config = {}) {
       }
 
       const paymentMemo = derivePaymentMemo(agentKey, secret);
-      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, apiKey);
+      const paid = await verifyPaymentViaBackend(paymentMemo, verifyUrl, apiKey);
       if (paid) paymentCache.set(agentKey, true);
       if (!paid) {
+        const mc = await getMerchantConfig();
+        if (!mc) return json(res, 500, { error: 'server_error', message: 'Payment verification not configured.' });
         return json(res, 402, {
           error: 'payment_required',
           message: 'Key is valid but payment has not been verified yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
           payment: {
             chain: 'solana',
-            network,
+            network: mc.network === 'devnet' ? 'devnet' : 'mainnet-beta',
             token: 'USDC',
             amount: String(MIN_PAYMENT),
-            wallet_address: walletAddress,
+            wallet_address: mc.walletAddress,
             memo: paymentMemo,
           },
         });
