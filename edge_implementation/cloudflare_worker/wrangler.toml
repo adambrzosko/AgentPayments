@@ -10,8 +10,7 @@ run_worker_first = true
 [vars]
 DEBUG = "true"
 HOME_WALLET_ADDRESS = "5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft"
+AGENTPAYMENTS_VERIFY_URL = "https://llmwallethub.vercel.app/api/gate/verify"
 # Set these in production via `wrangler secret put` / dashboard:
 # CHALLENGE_SECRET
-# HOME_WALLET_ADDRESS
-# AGENTPAYMENTS_VERIFY_URL
 # AGENTPAYMENTS_GATE_SECRET
