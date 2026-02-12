@@ -16,6 +16,7 @@ const MIN_PAYMENT_USDC = 0.01;
 const SIG_SCAN_LIMIT = 20;
 const RPC_RETRIES = 3;
 const TIME_BUDGET_MS = 8000;
+const MAX_TX_TO_PARSE = 14;
 const RETRYABLE_MESSAGES = ['429', 'Too Many Requests', 'fetch failed', 'ETIMEDOUT', 'ECONNRESET'];
 
 function isDevnet(rpcUrl) {
@@ -78,17 +79,21 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   const connection = new Connection(rpcUrl, 'confirmed');
   const usdcMint = getUsdcMint(rpcUrl);
 
-  // Collect addresses to scan: main wallet + its USDC ATAs
-  const addressesToScan = [walletAddress];
+  // Collect addresses to scan. Prioritize USDC token accounts first because
+  // payments land there; scanning the main wallet first can waste the time budget.
+  let tokenAccounts = [];
   try {
-    const tokenAccounts = await withRpcRetry(
+    tokenAccounts = await withRpcRetry(
       () => getTokenAccounts(connection, walletAddress, usdcMint),
       'getTokenAccountsByOwner'
     );
-    addressesToScan.push(...tokenAccounts);
   } catch {
     // If token account lookup fails, still try the main wallet
   }
+
+  const addressesToScan = tokenAccounts.length > 0
+    ? [...tokenAccounts, walletAddress]
+    : [walletAddress];
 
   // Gather unique signatures across all addresses
   const seen = new Set();
@@ -119,7 +124,12 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   }
 
   // Check each transaction for memo + USDC transfer
+  let parsedCount = 0;
   for (const sigInfo of allSigs) {
+    if (parsedCount >= MAX_TX_TO_PARSE) {
+      console.warn('[verify-service] tx parse cap reached');
+      break;
+    }
     if (isTimedOut()) {
       console.warn('[verify-service] time budget exceeded while scanning transactions');
       break;
@@ -129,6 +139,7 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
 
     let tx;
     try {
+      parsedCount += 1;
       tx = await withRpcRetry(
         () => connection.getParsedTransaction(sigInfo.signature, {
           maxSupportedTransactionVersion: 0,
