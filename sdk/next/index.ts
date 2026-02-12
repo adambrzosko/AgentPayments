@@ -4,8 +4,8 @@ import { createVercelEdgeGate } from '../edge/vercel.js';
 type EnvConfig = {
   CHALLENGE_SECRET?: string;
   HOME_WALLET_ADDRESS?: string;
-  SOLANA_RPC_URL?: string;
-  USDC_MINT?: string;
+  AGENTPAYMENTS_VERIFY_URL?: string;
+  AGENTPAYMENTS_GATE_SECRET?: string;
   DEBUG?: string;
 };
 
@@ -19,8 +19,8 @@ export function createNextMiddleware(options: Options = {}) {
   const env: EnvConfig = options.env || {
     CHALLENGE_SECRET: process.env.CHALLENGE_SECRET,
     HOME_WALLET_ADDRESS: process.env.HOME_WALLET_ADDRESS,
-    SOLANA_RPC_URL: process.env.SOLANA_RPC_URL,
-    USDC_MINT: process.env.USDC_MINT,
+    AGENTPAYMENTS_VERIFY_URL: process.env.AGENTPAYMENTS_VERIFY_URL,
+    AGENTPAYMENTS_GATE_SECRET: process.env.AGENTPAYMENTS_GATE_SECRET,
     DEBUG: process.env.DEBUG,
   };
 

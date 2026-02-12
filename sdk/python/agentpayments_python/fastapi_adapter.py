@@ -12,7 +12,7 @@ from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_co
 from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter
-from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, verify_payment_on_chain
+from .solana import MIN_PAYMENT, derive_payment_memo, is_valid_solana_address, verify_payment_via_backend
 
 import json as _json
 from pathlib import Path as _Path
@@ -23,7 +23,7 @@ MAX_FP_LENGTH = _constants["MAX_FP_LENGTH"]
 
 
 class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url: str = "", usdc_mint: str = ""):
+    def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, verify_url: str = "", gate_api_secret: str = "", debug: bool = True):
         super().__init__(app)
         if challenge_secret == "default-secret-change-me":
             import logging
@@ -37,8 +37,8 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
         self.challenge_secret = challenge_secret
         self.home_wallet_address = home_wallet_address
         self.debug = debug
-        self.solana_rpc_url = solana_rpc_url or (RPC_DEVNET if debug else RPC_MAINNET)
-        self.usdc_mint = usdc_mint or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
+        self.verify_url = verify_url
+        self.gate_api_secret = gate_api_secret
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -53,11 +53,12 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
             network = "devnet" if self.debug else "mainnet-beta"
             if not agent_key:
                 new_key = generate_agent_key(self.challenge_secret)
+                payment_memo = derive_payment_memo(new_key, self.challenge_secret)
                 return JSONResponse({
                     "error": "payment_required",
-                    "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.",
+                    "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.",
                     "your_key": new_key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": new_key},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": payment_memo},
                 }, status_code=402)
 
             if not is_valid_agent_key(agent_key, self.challenge_secret):
@@ -66,12 +67,16 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
             if not self.home_wallet_address:
                 return JSONResponse({"error": "server_error", "message": "Payment verification unavailable."}, status_code=500)
 
-            if not verify_payment_on_chain(agent_key, self.home_wallet_address, self.solana_rpc_url, self.usdc_mint):
+            if not self.verify_url or not self.gate_api_secret:
+                return JSONResponse({"error": "server_error", "message": "Payment verification not configured."}, status_code=500)
+
+            payment_memo = derive_payment_memo(agent_key, self.challenge_secret)
+            if not verify_payment_via_backend(payment_memo, self.home_wallet_address, self.verify_url, self.gate_api_secret, cache_key=agent_key):
                 return JSONResponse({
                     "error": "payment_required",
-                    "message": "Key is valid but payment has not been verified on-chain yet.",
+                    "message": "Key is valid but payment has not been verified yet.",
                     "your_key": agent_key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": agent_key},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": self.home_wallet_address, "memo": payment_memo},
                 }, status_code=402)
 
             return await call_next(request)

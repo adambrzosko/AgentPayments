@@ -12,11 +12,8 @@ from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser, is_public_path
 from .solana import (
     MIN_PAYMENT,
-    RPC_DEVNET,
-    RPC_MAINNET,
-    USDC_MINT_DEVNET,
-    USDC_MINT_MAINNET,
-    verify_payment_on_chain,
+    derive_payment_memo,
+    verify_payment_via_backend,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,8 +27,8 @@ class GateMiddleware:
         secret = settings.CHALLENGE_SECRET
         wallet_address = settings.HOME_WALLET_ADDRESS
         debug = settings.DEBUG
-        rpc_url = settings.SOLANA_RPC_URL or (RPC_DEVNET if debug else RPC_MAINNET)
-        usdc_mint = settings.USDC_MINT or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
+        _verify_url = getattr(settings, "AGENTPAYMENTS_VERIFY_URL", "")
+        _gate_secret = getattr(settings, "AGENTPAYMENTS_GATE_SECRET", "")
         network = "devnet" if debug else "mainnet"
 
         pathname = request.path
@@ -47,12 +44,13 @@ class GateMiddleware:
 
             if not agent_key:
                 new_key = generate_agent_key(secret)
+                payment_memo = derive_payment_memo(new_key, secret)
                 return JsonResponse(
                     {
                         "error": "payment_required",
                         "message": (
                             "Access requires a paid API key. A key has been generated for you below. "
-                            "Send a USDC payment on Solana with this key as the memo to activate it, "
+                            "Send a USDC payment with the provided memo to activate it, "
                             "then retry your request with the X-Agent-Key header."
                         ),
                         "your_key": new_key,
@@ -62,10 +60,10 @@ class GateMiddleware:
                             "token": "USDC",
                             "amount": str(MIN_PAYMENT),
                             "wallet_address": wallet_address,
-                            "memo": new_key,
+                            "memo": payment_memo,
                             "instructions": (
                                 f"Send {MIN_PAYMENT} USDC on Solana {network} to "
-                                f"{wallet_address} with memo \"{new_key}\". "
+                                f"{wallet_address} with memo \"{payment_memo}\". "
                                 f"Then include the header X-Agent-Key: {new_key} "
                                 "on all subsequent requests."
                             ),
@@ -97,14 +95,25 @@ class GateMiddleware:
                     json_dumps_params={"indent": 2},
                 )
 
-            paid = verify_payment_on_chain(agent_key, wallet_address, rpc_url, usdc_mint)
+            if not _verify_url or not _gate_secret:
+                return JsonResponse(
+                    {
+                        "error": "server_error",
+                        "message": "Payment verification not configured.",
+                    },
+                    status=500,
+                    json_dumps_params={"indent": 2},
+                )
+
+            payment_memo = derive_payment_memo(agent_key, secret)
+            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _gate_secret, cache_key=agent_key)
 
             if not paid:
                 return JsonResponse(
                     {
                         "error": "payment_required",
                         "message": (
-                            "Key is valid but payment has not been verified on-chain yet. "
+                            "Key is valid but payment has not been verified yet. "
                             "Please send the USDC payment and allow a few moments for confirmation."
                         ),
                         "your_key": agent_key,
@@ -114,7 +123,7 @@ class GateMiddleware:
                             "token": "USDC",
                             "amount": str(MIN_PAYMENT),
                             "wallet_address": wallet_address,
-                            "memo": agent_key,
+                            "memo": payment_memo,
                         },
                     },
                     status=402,

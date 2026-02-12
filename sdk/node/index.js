@@ -1,9 +1,7 @@
 const crypto = require('node:crypto');
 const {
   COOKIE_NAME, COOKIE_MAX_AGE, KEY_PREFIX,
-  USDC_MINT_DEVNET, USDC_MINT_MAINNET,
-  RPC_DEVNET, RPC_MAINNET,
-  MEMO_PROGRAM, MIN_PAYMENT,
+  MIN_PAYMENT,
   MAX_KEY_LENGTH, MAX_NONCE_LENGTH, MAX_RETURN_TO_LENGTH, MAX_FP_LENGTH,
 } = require('../constants.json');
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -87,142 +85,22 @@ function isValidAgentKey(key, secret) {
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected.slice(0, 16)));
 }
 
-async function rpcCall(rpcUrl, method, params) {
-  const resp = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+function derivePaymentMemo(agentKey, secret) {
+  const sig = hmacSign(agentKey, secret);
+  return `gm_${sig.slice(0, 16)}`;
+}
+
+async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, gateSecret) {
+  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${gateSecret}` },
   });
-  if (!resp.ok) throw new Error(`RPC ${method} failed: ${resp.status}`);
-  return resp.json();
-}
-
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const ED25519_P = 2n ** 255n - 19n;
-const ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
-const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
-const TOKEN_PROGRAM_ADDR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-
-function b58decode(s) {
-  let n = 0n;
-  for (const c of s) n = n * 58n + BigInt(B58.indexOf(c));
-  const out = [];
-  while (n > 0n) { out.unshift(Number(n & 0xffn)); n >>= 8n; }
-  for (const c of s) { if (c !== '1') break; out.unshift(0); }
-  while (out.length < 32) out.unshift(0);
-  return new Uint8Array(out);
-}
-
-function b58encode(bytes) {
-  let n = 0n;
-  for (const b of bytes) n = n * 256n + BigInt(b);
-  let s = '';
-  while (n > 0n) { s = B58[Number(n % 58n)] + s; n /= 58n; }
-  for (const b of bytes) { if (b !== 0) break; s = '1' + s; }
-  return s;
-}
-
-function modpow(b, e, m) {
-  let r = 1n; b = ((b % m) + m) % m;
-  while (e > 0n) { if (e & 1n) r = r * b % m; e >>= 1n; b = b * b % m; }
-  return r;
-}
-
-function isOnCurve(bytes) {
-  let y = 0n;
-  for (let i = 0; i < 32; i++) y += BigInt(i === 31 ? bytes[i] & 0x7f : bytes[i]) << BigInt(8 * i);
-  if (y >= ED25519_P) return false;
-  const y2 = y * y % ED25519_P;
-  const x2 = (y2 - 1n + ED25519_P) % ED25519_P * modpow((1n + ED25519_D * y2) % ED25519_P, ED25519_P - 2n, ED25519_P) % ED25519_P;
-  if (x2 === 0n) return true;
-  return modpow(x2, (ED25519_P - 1n) / 2n, ED25519_P) === 1n;
-}
-
-function deriveAta(owner, mint) {
-  const seeds = [b58decode(owner), b58decode(TOKEN_PROGRAM_ADDR), b58decode(mint)];
-  const programId = b58decode(ASSOCIATED_TOKEN_PROGRAM);
-  const suffix = Buffer.from('ProgramDerivedAddress');
-  for (let bump = 255; bump >= 0; bump--) {
-    const buf = Buffer.concat([...seeds, Buffer.from([bump]), programId, suffix]);
-    const hash = crypto.createHash('sha256').update(buf).digest();
-    if (!isOnCurve(hash)) return b58encode(hash);
+  if (!resp.ok) {
+    gateLog('error', 'Backend verification request failed', { status: resp.status });
+    return false;
   }
-  return null;
-}
-
-async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, usdcMint) {
-  try {
-    const derivedAta = deriveAta(walletAddress, usdcMint);
-
-    let rpcAccounts = [];
-    try {
-      const ataData = await rpcCall(rpcUrl, 'getTokenAccountsByOwner', [
-        walletAddress,
-        { mint: usdcMint },
-        { encoding: 'jsonParsed', commitment: 'confirmed' },
-      ]);
-      rpcAccounts = (ataData.result?.value || []).map((a) => a.pubkey);
-    } catch (e) {
-      gateLog('warn', 'getTokenAccountsByOwner failed, using derived ATA', { error: e.message });
-    }
-
-    const addressSet = new Set([walletAddress, ...rpcAccounts]);
-    if (derivedAta) addressSet.add(derivedAta);
-    const addressesToScan = [...addressSet];
-    const seen = new Set();
-    const allSignatures = [];
-
-    for (const addr of addressesToScan) {
-      const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50, commitment: 'confirmed' }]);
-      for (const sig of sigsData.result || []) {
-        if (!seen.has(sig.signature)) {
-          seen.add(sig.signature);
-          allSignatures.push(sig);
-        }
-      }
-    }
-
-    for (const sigInfo of allSignatures) {
-      if (sigInfo.err) continue;
-
-      const txData = await rpcCall(rpcUrl, 'getTransaction', [
-        sigInfo.signature,
-        { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
-      ]);
-      const tx = txData.result;
-      if (!tx) continue;
-
-      const instructions = tx.transaction?.message?.instructions || [];
-      const innerInstructions = tx.meta?.innerInstructions || [];
-      const allInstructions = [...instructions, ...innerInstructions.flatMap((inner) => inner.instructions || [])];
-
-      let hasMemo = false;
-      let hasPayment = false;
-
-      for (const ix of allInstructions) {
-        if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
-          const memo = typeof ix.parsed === 'string' ? ix.parsed : '';
-          if (memo.includes(agentKey)) hasMemo = true;
-        }
-
-        if (ix.program === 'spl-token') {
-          const parsed = ix.parsed || {};
-          if (parsed.type === 'transfer' || parsed.type === 'transferChecked') {
-            const info = parsed.info || {};
-            if (parsed.type === 'transferChecked' && info.mint !== usdcMint) continue;
-            const uiAmount = info.tokenAmount?.uiAmount ?? Number.parseFloat(info.amount || '0') / 1e6;
-            if (uiAmount >= MIN_PAYMENT) hasPayment = true;
-          }
-        }
-      }
-
-      if (hasMemo && hasPayment) return true;
-    }
-  } catch (error) {
-    gateLog('error', 'Solana RPC error', { error: error.message });
-  }
-
-  return false;
+  const data = await resp.json();
+  return data.paid === true;
 }
 
 function getCookie(req, name) {
@@ -302,8 +180,8 @@ function agentPaymentsGate(config = {}) {
   const {
     challengeSecret,
     homeWalletAddress,
-    solanaRpcUrl,
-    usdcMint,
+    verifyUrl,
+    gateApiSecret,
     debug = process.env.DEBUG !== 'false',
   } = config;
 
@@ -319,8 +197,6 @@ function agentPaymentsGate(config = {}) {
   if (walletAddress && !BASE58_RE.test(walletAddress)) {
     throw new Error(`[gate] HOME_WALLET_ADDRESS "${walletAddress}" is not a valid Solana public key (expected 32-44 base58 characters).`);
   }
-  const rpcUrl = solanaRpcUrl || (debug ? RPC_DEVNET : RPC_MAINNET);
-  const mint = usdcMint || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
   const network = debug ? 'devnet' : 'mainnet-beta';
   const paymentCache = new PaymentCache();
   const rateLimiter = new RateLimiter();
@@ -376,9 +252,10 @@ function agentPaymentsGate(config = {}) {
 
       if (!agentKey) {
         const newKey = generateAgentKey(secret);
+        const paymentMemo = derivePaymentMemo(newKey, secret);
         return json(res, 402, {
           error: 'payment_required',
-          message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.',
+          message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.',
           your_key: newKey,
           payment: {
             chain: 'solana',
@@ -386,8 +263,8 @@ function agentPaymentsGate(config = {}) {
             token: 'USDC',
             amount: String(MIN_PAYMENT),
             wallet_address: walletAddress,
-            memo: newKey,
-            instructions: `Send ${MIN_PAYMENT} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
+            memo: paymentMemo,
+            instructions: `Send ${MIN_PAYMENT} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
           },
         });
       }
@@ -406,12 +283,18 @@ function agentPaymentsGate(config = {}) {
 
       const cached = paymentCache.get(agentKey);
       if (cached === true) return next();
-      const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrl, mint);
+
+      if (!verifyUrl || !gateApiSecret) {
+        return json(res, 500, { error: 'server_error', message: 'Payment verification not configured.' });
+      }
+
+      const paymentMemo = derivePaymentMemo(agentKey, secret);
+      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, gateApiSecret);
       if (paid) paymentCache.set(agentKey, true);
       if (!paid) {
         return json(res, 402, {
           error: 'payment_required',
-          message: 'Key is valid but payment has not been verified on-chain yet. Please send the USDC payment and allow a few moments for confirmation.',
+          message: 'Key is valid but payment has not been verified yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
           payment: {
             chain: 'solana',
@@ -419,7 +302,7 @@ function agentPaymentsGate(config = {}) {
             token: 'USDC',
             amount: String(MIN_PAYMENT),
             wallet_address: walletAddress,
-            memo: agentKey,
+            memo: paymentMemo,
           },
         });
       }

@@ -20,8 +20,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use(agentPaymentsGate({
   challengeSecret: process.env.CHALLENGE_SECRET,
   homeWalletAddress: process.env.HOME_WALLET_ADDRESS,
-  solanaRpcUrl: process.env.SOLANA_RPC_URL,
-  usdcMint: process.env.USDC_MINT,
+  verifyUrl: process.env.AGENTPAYMENTS_VERIFY_URL,
+  gateApiSecret: process.env.AGENTPAYMENTS_GATE_SECRET,
 }));
 
 app.get('/.well-known/agent-access.json', (_req, res) => {

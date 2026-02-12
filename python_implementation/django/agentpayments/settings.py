@@ -64,5 +64,5 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # --- AgentPayments gate configuration ---
 CHALLENGE_SECRET = os.environ.get("CHALLENGE_SECRET", "default-secret-change-me")
 HOME_WALLET_ADDRESS = os.environ.get("HOME_WALLET_ADDRESS", "")
-SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "")
-USDC_MINT = os.environ.get("USDC_MINT", "")
+AGENTPAYMENTS_VERIFY_URL = os.environ.get("AGENTPAYMENTS_VERIFY_URL", "")
+AGENTPAYMENTS_GATE_SECRET = os.environ.get("AGENTPAYMENTS_GATE_SECRET", "")

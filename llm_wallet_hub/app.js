@@ -19,6 +19,7 @@ const __dirname = path.dirname(__filename);
 
 const APP_BASE_URL = process.env.APP_BASE_URL || '';
 const MASTER_KEY = process.env.MASTER_KEY || '';
+const GATE_API_SECRET = process.env.GATE_API_SECRET || '';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
 const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
@@ -127,6 +128,7 @@ async function initPostgres() {
       amount_sol DOUBLE PRECISION NOT NULL,
       reason TEXT NOT NULL,
       resource_url TEXT NOT NULL,
+      memo TEXT,
       signature TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -135,6 +137,10 @@ async function initPostgres() {
     CREATE INDEX IF NOT EXISTS idx_api_keys_lookup ON api_keys(key_prefix, key_hash) WHERE active = true;
     CREATE INDEX IF NOT EXISTS idx_payments_user_created_at ON payments(user_id, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_user_idem ON payments(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_payments_memo_recipient ON payments(memo, recipient) WHERE memo IS NOT NULL;
+
+    -- Migration: add memo column to existing payments tables
+    ALTER TABLE payments ADD COLUMN IF NOT EXISTS memo TEXT;
   `);
 }
 
@@ -746,8 +752,8 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
 
     if (USE_POSTGRES) {
       await pool.query(
-        `INSERT INTO payments (id, idempotency_key, user_id, api_key_id, recipient, amount_sol, reason, resource_url, signature, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        `INSERT INTO payments (id, idempotency_key, user_id, api_key_id, recipient, amount_sol, reason, resource_url, memo, signature, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [
           payment.id,
           payment.idempotencyKey,
@@ -757,6 +763,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
           payment.amountSol,
           payment.reason,
           payment.resourceUrl,
+          payment.memo,
           payment.signature,
           payment.createdAt
         ]
@@ -776,6 +783,32 @@ app.get('/api/tool/balance', authTool, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
   const balanceUsdc = await getUsdcBalance(req.user.wallet.publicKey);
   res.json({ walletAddress: req.user.wallet.publicKey, balanceSol, balanceUsdc, token: 'USDC', usdcMint: getUsdcMintAddress() });
+});
+
+app.get('/api/gate/verify', async (req, res) => {
+  try {
+    const auth = req.headers.authorization || '';
+    if (!GATE_API_SECRET || !auth.startsWith('Bearer ') || auth.slice(7) !== GATE_API_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const memo = String(req.query.memo || '');
+    const wallet = String(req.query.wallet || '');
+    if (!memo || !wallet) return res.status(400).json({ error: 'memo and wallet query params required' });
+
+    if (USE_POSTGRES) {
+      const result = await pool.query(
+        `SELECT 1 FROM payments WHERE memo = $1 AND recipient = $2 LIMIT 1`,
+        [memo, wallet]
+      );
+      return res.json({ paid: result.rows.length > 0 });
+    }
+
+    const db = readDb();
+    const found = db.payments.some((p) => p.memo === memo && p.recipient === wallet);
+    return res.json({ paid: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));

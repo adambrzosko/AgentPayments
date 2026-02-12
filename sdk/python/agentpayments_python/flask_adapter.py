@@ -8,7 +8,7 @@ from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_co
 from .crypto import generate_agent_key, hmac_sign, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter
-from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, verify_payment_on_chain
+from .solana import MIN_PAYMENT, derive_payment_memo, is_valid_solana_address, verify_payment_via_backend
 
 import json as _json
 from pathlib import Path as _Path
@@ -18,7 +18,7 @@ MAX_RETURN_TO_LENGTH = _constants["MAX_RETURN_TO_LENGTH"]
 MAX_FP_LENGTH = _constants["MAX_FP_LENGTH"]
 
 
-def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url: str = "", usdc_mint: str = ""):
+def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, verify_url: str = "", gate_api_secret: str = "", debug: bool = True):
     if challenge_secret == "default-secret-change-me":
         import logging
         logger = logging.getLogger("agentpayments")
@@ -28,8 +28,6 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
             raise RuntimeError("CHALLENGE_SECRET is set to the insecure default. Set a strong, unique secret for production.")
     if home_wallet_address and not is_valid_solana_address(home_wallet_address):
         raise ValueError(f"HOME_WALLET_ADDRESS '{home_wallet_address}' is not a valid Solana public key (expected 32-44 base58 characters).")
-    rpc_url = solana_rpc_url or (RPC_DEVNET if debug else RPC_MAINNET)
-    mint = usdc_mint or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
 
     @app.before_request
     def _gate():
@@ -44,22 +42,26 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
             network = "devnet" if debug else "mainnet-beta"
             if not key:
                 new_key = generate_agent_key(challenge_secret)
+                payment_memo = derive_payment_memo(new_key, challenge_secret)
                 return jsonify({
                     "error": "payment_required",
-                    "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.",
+                    "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.",
                     "your_key": new_key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": home_wallet_address, "memo": new_key},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": home_wallet_address, "memo": payment_memo},
                 }), 402
             if not is_valid_agent_key(key, challenge_secret):
                 return jsonify({"error": "forbidden", "message": "Invalid API key."}), 403
             if not home_wallet_address:
                 return jsonify({"error": "server_error", "message": "Payment verification unavailable."}), 500
-            if not verify_payment_on_chain(key, home_wallet_address, rpc_url, mint):
+            if not verify_url or not gate_api_secret:
+                return jsonify({"error": "server_error", "message": "Payment verification not configured."}), 500
+            payment_memo = derive_payment_memo(key, challenge_secret)
+            if not verify_payment_via_backend(payment_memo, home_wallet_address, verify_url, gate_api_secret, cache_key=key):
                 return jsonify({
                     "error": "payment_required",
-                    "message": "Key is valid but payment has not been verified on-chain yet.",
+                    "message": "Key is valid but payment has not been verified yet.",
                     "your_key": key,
-                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": home_wallet_address, "memo": key},
+                    "payment": {"chain": "solana", "network": network, "token": "USDC", "amount": str(MIN_PAYMENT), "wallet_address": home_wallet_address, "memo": payment_memo},
                 }), 402
             return None
 

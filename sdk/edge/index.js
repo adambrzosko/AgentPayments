@@ -3,11 +3,6 @@
 const COOKIE_NAME = '__agp_verified';
 const COOKIE_MAX_AGE = 86400;
 const KEY_PREFIX = 'ag_';
-const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
-const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const RPC_DEVNET = 'https://api.devnet.solana.com';
-const RPC_MAINNET = 'https://api.mainnet-beta.solana.com';
-const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MIN_PAYMENT = 0.01;
 const MAX_KEY_LENGTH = 64;
 const MAX_NONCE_LENGTH = 128;
@@ -94,81 +89,22 @@ async function isValidAgentKey(key, secret) {
   return timingSafeEqual(sig, expected.slice(0, 16));
 }
 
-async function rpcCall(rpcUrl, method, params) {
-  const resp = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  if (!resp.ok) throw new Error(`RPC ${method} failed: ${resp.status}`);
-  return resp.json();
+async function derivePaymentMemo(agentKey, secret) {
+  const sig = await hmacSign(agentKey, secret);
+  return `gm_${sig.slice(0, 16)}`;
 }
 
-async function verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, usdcMint) {
-  try {
-    const addressesToScan = walletAta ? [walletAta] : [walletAddress];
-    gateLog('info', 'Payment verification started', { agentKey: agentKey.slice(0, 12) + '...', addressesToScan, rpcUrl, usdcMint });
-
-    const seen = new Set();
-    const allSignatures = [];
-
-    for (const addr of addressesToScan) {
-      const sigsData = await rpcCall(rpcUrl, 'getSignaturesForAddress', [addr, { limit: 50, commitment: 'confirmed' }]);
-      const sigs = sigsData.result || [];
-      gateLog('info', 'Signatures fetched', { address: addr, count: sigs.length, memos: sigs.slice(0, 5).map((s) => s.memo) });
-      for (const sig of sigs) {
-        if (!seen.has(sig.signature)) {
-          seen.add(sig.signature);
-          allSignatures.push(sig);
-        }
-      }
-    }
-
-    for (const sigInfo of allSignatures) {
-      if (sigInfo.err) continue;
-
-      const sigMemo = (sigInfo.memo || '').replace(/^\[\d+\]\s*/, '');
-      const memoMatch = sigMemo && sigMemo.includes(agentKey);
-
-      const txData = await rpcCall(rpcUrl, 'getTransaction', [sigInfo.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]);
-      const tx = txData.result;
-      if (!tx) {
-        gateLog('warn', 'getTransaction returned null', { signature: sigInfo.signature });
-        continue;
-      }
-
-      const instructions = tx.transaction?.message?.instructions || [];
-      const innerInstructions = tx.meta?.innerInstructions || [];
-      const allInstructions = [...instructions, ...innerInstructions.flatMap((inner) => inner.instructions || [])];
-
-      let hasMemo = memoMatch;
-      let hasPayment = false;
-
-      for (const ix of allInstructions) {
-        if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
-          const memo = typeof ix.parsed === 'string' ? ix.parsed : '';
-          if (memo.includes(agentKey)) hasMemo = true;
-        }
-
-        if (ix.program === 'spl-token') {
-          const parsed = ix.parsed || {};
-          if (parsed.type === 'transfer' || parsed.type === 'transferChecked') {
-            const info = parsed.info || {};
-            if (parsed.type === 'transferChecked' && info.mint !== usdcMint) continue;
-            const uiAmount = info.tokenAmount?.uiAmount ?? Number.parseFloat(info.amount || '0') / 1e6;
-            if (uiAmount >= MIN_PAYMENT) hasPayment = true;
-          }
-        }
-      }
-
-      gateLog('info', 'Transaction checked', { signature: sigInfo.signature.slice(0, 12) + '...', hasMemo, hasPayment, memoFromSig: sigMemo || null });
-      if (hasMemo && hasPayment) return true;
-    }
-  } catch (error) {
-    gateLog('error', 'Solana RPC error', { error: error.message });
+async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, gateSecret) {
+  const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${gateSecret}` },
+  });
+  if (!resp.ok) {
+    gateLog('error', 'Backend verification request failed', { status: resp.status });
+    return false;
   }
-
-  return false;
+  const data = await resp.json();
+  return data.paid === true;
 }
 
 function getCookie(request, name) {
@@ -244,9 +180,8 @@ export function createEdgeGate(options = {}) {
       gateLog('error', 'Invalid HOME_WALLET_ADDRESS', { walletAddress });
       return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: invalid wallet address.' }, 500);
     }
-    const walletAta = effectiveEnv.HOME_WALLET_ATA || '';
-    const rpcUrl = effectiveEnv.SOLANA_RPC_URL || (debug ? RPC_DEVNET : RPC_MAINNET);
-    const usdcMint = effectiveEnv.USDC_MINT || (debug ? USDC_MINT_DEVNET : USDC_MINT_MAINNET);
+    const verifyUrl = effectiveEnv.AGENTPAYMENTS_VERIFY_URL || '';
+    const gateSecret = effectiveEnv.AGENTPAYMENTS_GATE_SECRET || '';
 
     if (isPublicPath(url.pathname, publicPathAllowlist)) {
       return fetchUpstream(request, effectiveEnv, context);
@@ -298,9 +233,10 @@ export function createEdgeGate(options = {}) {
 
       if (!agentKey) {
         const newKey = await generateAgentKey(secret);
+        const paymentMemo = await derivePaymentMemo(newKey, secret);
         return jsonResponse({
           error: 'payment_required',
-          message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.',
+          message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment with the provided memo to activate it, then retry your request with the X-Agent-Key header.',
           your_key: newKey,
           payment: {
             chain: 'solana',
@@ -308,8 +244,8 @@ export function createEdgeGate(options = {}) {
             token: 'USDC',
             amount: String(minPayment),
             wallet_address: walletAddress,
-            memo: newKey,
-            instructions: `Send ${minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
+            memo: paymentMemo,
+            instructions: `Send ${minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${paymentMemo}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`,
           },
         }, 402);
       }
@@ -329,12 +265,18 @@ export function createEdgeGate(options = {}) {
       if (getCachedPayment(agentKey) === true) {
         return fetchUpstream(request, effectiveEnv, context);
       }
-      const paid = await verifyPaymentOnChain(agentKey, walletAddress, walletAta, rpcUrl, usdcMint);
+
+      if (!verifyUrl || !gateSecret) {
+        return jsonResponse({ error: 'server_error', message: 'Payment verification not configured.' }, 500);
+      }
+
+      const paymentMemo = await derivePaymentMemo(agentKey, secret);
+      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, gateSecret);
       if (paid) setCachedPayment(agentKey, true);
       if (!paid) {
         return jsonResponse({
           error: 'payment_required',
-          message: 'Key is valid but payment has not been verified on-chain yet. Please send the USDC payment and allow a few moments for confirmation.',
+          message: 'Key is valid but payment has not been verified yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
           payment: {
             chain: 'solana',
@@ -342,7 +284,7 @@ export function createEdgeGate(options = {}) {
             token: 'USDC',
             amount: String(minPayment),
             wallet_address: walletAddress,
-            memo: agentKey,
+            memo: paymentMemo,
           },
         }, 402);
       }
