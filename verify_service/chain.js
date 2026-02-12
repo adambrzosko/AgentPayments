@@ -13,8 +13,9 @@ const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const MEMO_PROGRAM_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MIN_PAYMENT_USDC = 0.01;
-const SIG_SCAN_LIMIT = 50;
-const RPC_RETRIES = 4;
+const SIG_SCAN_LIMIT = 20;
+const RPC_RETRIES = 3;
+const TIME_BUDGET_MS = 8000;
 const RETRYABLE_MESSAGES = ['429', 'Too Many Requests', 'fetch failed', 'ETIMEDOUT', 'ECONNRESET'];
 
 function isDevnet(rpcUrl) {
@@ -71,6 +72,9 @@ async function getTokenAccounts(connection, walletAddress, usdcMint) {
  * @returns {{ paid: boolean, txSignature: string|null, amount: number|null }}
  */
 export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
+  const startedAt = Date.now();
+  const isTimedOut = () => Date.now() - startedAt > TIME_BUDGET_MS;
+
   const connection = new Connection(rpcUrl, 'confirmed');
   const usdcMint = getUsdcMint(rpcUrl);
 
@@ -90,6 +94,11 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   const seen = new Set();
   const allSigs = [];
   for (const addr of addressesToScan) {
+    if (isTimedOut()) {
+      console.warn('[verify-service] time budget exceeded while fetching signatures');
+      break;
+    }
+
     let sigs = [];
     try {
       sigs = await withRpcRetry(
@@ -111,6 +120,11 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
 
   // Check each transaction for memo + USDC transfer
   for (const sigInfo of allSigs) {
+    if (isTimedOut()) {
+      console.warn('[verify-service] time budget exceeded while scanning transactions');
+      break;
+    }
+
     if (sigInfo.err) continue;
 
     let tx;
