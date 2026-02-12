@@ -112,13 +112,18 @@ async function fetchMerchantConfig(verifyUrl, apiKey) {
   const cached = merchantConfigCache.get(apiKey);
   if (cached) return cached;
   const baseUrl = verifyUrl.replace(/\/verify\/?$/, '');
-  const resp = await fetch(`${baseUrl}/merchants/me`, {
+  const url = `${baseUrl}/merchants/me`;
+  gateLog('info', 'Fetching merchant config', { url, hasApiKey: Boolean(apiKey) });
+  const resp = await fetch(url, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
   });
   if (!resp.ok) {
-    throw new Error(`Failed to fetch merchant config: HTTP ${resp.status}`);
+    const body = await resp.text().catch(() => '');
+    gateLog('error', 'Failed to fetch merchant config', { url, status: resp.status, body });
+    return null;
   }
   const config = await resp.json();
+  gateLog('info', 'Merchant config fetched', { walletAddress: config.walletAddress, network: config.network });
   merchantConfigCache.set(apiKey, config);
   return config;
 }
