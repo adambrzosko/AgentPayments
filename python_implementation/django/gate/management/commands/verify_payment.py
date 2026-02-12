@@ -19,7 +19,7 @@ class Command(BaseCommand):
         agent_key = options["agent_key"]
         wallet = options["wallet"] or settings.HOME_WALLET_ADDRESS
         verify_url = settings.AGENTPAYMENTS_VERIFY_URL
-        gate_secret = settings.AGENTPAYMENTS_GATE_SECRET
+        api_key = settings.AGENTPAYMENTS_API_KEY
 
         if not wallet:
             self.stderr.write(
@@ -27,9 +27,9 @@ class Command(BaseCommand):
             )
             return
 
-        if not verify_url or not gate_secret:
+        if not verify_url or not api_key:
             self.stderr.write(
-                self.style.ERROR("Error: AGENTPAYMENTS_VERIFY_URL and AGENTPAYMENTS_GATE_SECRET must be set.")
+                self.style.ERROR("Error: AGENTPAYMENTS_VERIFY_URL and AGENTPAYMENTS_API_KEY must be set.")
             )
             return
 
@@ -40,7 +40,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Verify URL: {verify_url}")
         self.stdout.write("")
 
-        result = verify_payment_via_backend(memo, wallet, verify_url, gate_secret)
+        result = verify_payment_via_backend(memo, wallet, verify_url, api_key)
 
         if result:
             self.stdout.write(self.style.SUCCESS("VERIFIED - payment found."))

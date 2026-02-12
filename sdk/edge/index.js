@@ -94,10 +94,10 @@ async function derivePaymentMemo(agentKey, secret) {
   return `gm_${sig.slice(0, 16)}`;
 }
 
-async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, gateSecret) {
+async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
   const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
   const resp = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${gateSecret}` },
+    headers: { 'Authorization': `Bearer ${apiKey}` },
   });
   if (!resp.ok) {
     gateLog('error', 'Backend verification request failed', { status: resp.status });
@@ -181,7 +181,7 @@ export function createEdgeGate(options = {}) {
       return jsonResponse({ error: 'server_error', message: 'Server misconfiguration: invalid wallet address.' }, 500);
     }
     const verifyUrl = effectiveEnv.AGENTPAYMENTS_VERIFY_URL || '';
-    const gateSecret = effectiveEnv.AGENTPAYMENTS_GATE_SECRET || '';
+    const apiKey = effectiveEnv.AGENTPAYMENTS_API_KEY || '';
 
     if (isPublicPath(url.pathname, publicPathAllowlist)) {
       return fetchUpstream(request, effectiveEnv, context);
@@ -266,12 +266,12 @@ export function createEdgeGate(options = {}) {
         return fetchUpstream(request, effectiveEnv, context);
       }
 
-      if (!verifyUrl || !gateSecret) {
+      if (!verifyUrl || !apiKey) {
         return jsonResponse({ error: 'server_error', message: 'Payment verification not configured.' }, 500);
       }
 
       const paymentMemo = await derivePaymentMemo(agentKey, secret);
-      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, gateSecret);
+      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, apiKey);
       if (paid) setCachedPayment(agentKey, true);
       if (!paid) {
         return jsonResponse({

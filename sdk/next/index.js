@@ -6,7 +6,7 @@ export function createNextMiddleware(options = {}) {
     CHALLENGE_SECRET: process.env.CHALLENGE_SECRET,
     HOME_WALLET_ADDRESS: process.env.HOME_WALLET_ADDRESS,
     AGENTPAYMENTS_VERIFY_URL: process.env.AGENTPAYMENTS_VERIFY_URL,
-    AGENTPAYMENTS_GATE_SECRET: process.env.AGENTPAYMENTS_GATE_SECRET,
+    AGENTPAYMENTS_API_KEY: process.env.AGENTPAYMENTS_API_KEY,
     DEBUG: process.env.DEBUG,
   };
 

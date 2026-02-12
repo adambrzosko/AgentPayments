@@ -28,7 +28,7 @@ class GateMiddleware:
         wallet_address = settings.HOME_WALLET_ADDRESS
         debug = settings.DEBUG
         _verify_url = getattr(settings, "AGENTPAYMENTS_VERIFY_URL", "")
-        _gate_secret = getattr(settings, "AGENTPAYMENTS_GATE_SECRET", "")
+        _api_key = getattr(settings, "AGENTPAYMENTS_API_KEY", "")
         network = "devnet" if debug else "mainnet"
 
         pathname = request.path
@@ -95,7 +95,7 @@ class GateMiddleware:
                     json_dumps_params={"indent": 2},
                 )
 
-            if not _verify_url or not _gate_secret:
+            if not _verify_url or not _api_key:
                 return JsonResponse(
                     {
                         "error": "server_error",
@@ -106,7 +106,7 @@ class GateMiddleware:
                 )
 
             payment_memo = derive_payment_memo(agent_key, secret)
-            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _gate_secret, cache_key=agent_key)
+            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _api_key, cache_key=agent_key)
 
             if not paid:
                 return JsonResponse(

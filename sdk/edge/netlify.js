@@ -11,7 +11,7 @@ export function createNetlifyGate(options = {}) {
       CHALLENGE_SECRET: Deno.env.get('CHALLENGE_SECRET') || 'default-secret-change-me',
       HOME_WALLET_ADDRESS: Deno.env.get('HOME_WALLET_ADDRESS') || '',
       AGENTPAYMENTS_VERIFY_URL: Deno.env.get('AGENTPAYMENTS_VERIFY_URL') || '',
-      AGENTPAYMENTS_GATE_SECRET: Deno.env.get('AGENTPAYMENTS_GATE_SECRET') || '',
+      AGENTPAYMENTS_API_KEY: Deno.env.get('AGENTPAYMENTS_API_KEY') || '',
       DEBUG: Deno.env.get('DEBUG') ?? 'true',
     }),
     fetchUpstream: (request, _env, context) => context.next(request),

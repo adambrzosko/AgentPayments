@@ -65,4 +65,4 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CHALLENGE_SECRET = os.environ.get("CHALLENGE_SECRET", "default-secret-change-me")
 HOME_WALLET_ADDRESS = os.environ.get("HOME_WALLET_ADDRESS", "")
 AGENTPAYMENTS_VERIFY_URL = os.environ.get("AGENTPAYMENTS_VERIFY_URL", "")
-AGENTPAYMENTS_GATE_SECRET = os.environ.get("AGENTPAYMENTS_GATE_SECRET", "")
+AGENTPAYMENTS_API_KEY = os.environ.get("AGENTPAYMENTS_API_KEY", "")

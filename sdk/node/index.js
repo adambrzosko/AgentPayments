@@ -90,10 +90,10 @@ function derivePaymentMemo(agentKey, secret) {
   return `gm_${sig.slice(0, 16)}`;
 }
 
-async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, gateSecret) {
+async function verifyPaymentViaBackend(memo, walletAddress, verifyUrl, apiKey) {
   const url = `${verifyUrl}?memo=${encodeURIComponent(memo)}&wallet=${encodeURIComponent(walletAddress)}`;
   const resp = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${gateSecret}` },
+    headers: { 'Authorization': `Bearer ${apiKey}` },
   });
   if (!resp.ok) {
     gateLog('error', 'Backend verification request failed', { status: resp.status });
@@ -181,7 +181,7 @@ function agentPaymentsGate(config = {}) {
     challengeSecret,
     homeWalletAddress,
     verifyUrl,
-    gateApiSecret,
+    apiKey,
     debug = process.env.DEBUG !== 'false',
   } = config;
 
@@ -284,12 +284,12 @@ function agentPaymentsGate(config = {}) {
       const cached = paymentCache.get(agentKey);
       if (cached === true) return next();
 
-      if (!verifyUrl || !gateApiSecret) {
+      if (!verifyUrl || !apiKey) {
         return json(res, 500, { error: 'server_error', message: 'Payment verification not configured.' });
       }
 
       const paymentMemo = derivePaymentMemo(agentKey, secret);
-      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, gateApiSecret);
+      const paid = await verifyPaymentViaBackend(paymentMemo, walletAddress, verifyUrl, apiKey);
       if (paid) paymentCache.set(agentKey, true);
       if (!paid) {
         return json(res, 402, {

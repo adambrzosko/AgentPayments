@@ -27,6 +27,7 @@ Therefore:
 - `edge_implementation/netlify/`: Netlify deployment files.
 - `edge_implementation/cloudflare_worker/`: Cloudflare Worker integration demo.
 - `node_implementation/`: Node/Express integration demo.
+- `verify_service/`: Standalone payment verification backend (own Postgres DB, per-merchant API keys, on-chain Solana checks).
 - `scripts/`: Demo and verification scripts.
 
 ## Expectations

@@ -19,7 +19,6 @@ const __dirname = path.dirname(__filename);
 
 const APP_BASE_URL = process.env.APP_BASE_URL || '';
 const MASTER_KEY = process.env.MASTER_KEY || '';
-const GATE_API_SECRET = process.env.GATE_API_SECRET || '';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
 const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
@@ -824,32 +823,6 @@ app.get('/api/tool/balance', authTool, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
   const balanceUsdc = await getUsdcBalance(req.user.wallet.publicKey);
   res.json({ walletAddress: req.user.wallet.publicKey, balanceSol, balanceUsdc, token: 'USDC', usdcMint: getUsdcMintAddress() });
-});
-
-app.get('/api/gate/verify', async (req, res) => {
-  try {
-    const auth = req.headers.authorization || '';
-    if (!GATE_API_SECRET || !auth.startsWith('Bearer ') || auth.slice(7) !== GATE_API_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    const memo = String(req.query.memo || '');
-    const wallet = String(req.query.wallet || '');
-    if (!memo || !wallet) return res.status(400).json({ error: 'memo and wallet query params required' });
-
-    if (USE_POSTGRES) {
-      const result = await pool.query(
-        `SELECT 1 FROM payments WHERE memo = $1 AND recipient = $2 LIMIT 1`,
-        [memo, wallet]
-      );
-      return res.json({ paid: result.rows.length > 0 });
-    }
-
-    const db = readDb();
-    const found = db.payments.some((p) => p.memo === memo && p.recipient === wallet);
-    return res.json({ paid: found });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));

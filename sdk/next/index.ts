@@ -5,7 +5,7 @@ type EnvConfig = {
   CHALLENGE_SECRET?: string;
   HOME_WALLET_ADDRESS?: string;
   AGENTPAYMENTS_VERIFY_URL?: string;
-  AGENTPAYMENTS_GATE_SECRET?: string;
+  AGENTPAYMENTS_API_KEY?: string;
   DEBUG?: string;
 };
 
@@ -20,7 +20,7 @@ export function createNextMiddleware(options: Options = {}) {
     CHALLENGE_SECRET: process.env.CHALLENGE_SECRET,
     HOME_WALLET_ADDRESS: process.env.HOME_WALLET_ADDRESS,
     AGENTPAYMENTS_VERIFY_URL: process.env.AGENTPAYMENTS_VERIFY_URL,
-    AGENTPAYMENTS_GATE_SECRET: process.env.AGENTPAYMENTS_GATE_SECRET,
+    AGENTPAYMENTS_API_KEY: process.env.AGENTPAYMENTS_API_KEY,
     DEBUG: process.env.DEBUG,
   };
 

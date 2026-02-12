@@ -15,13 +15,13 @@ def derive_payment_memo(agent_key: str, secret: str) -> str:
 
 
 def verify_payment_via_backend(
-    memo: str, wallet_address: str, verify_url: str, gate_secret: str
+    memo: str, wallet_address: str, verify_url: str, api_key: str
 ) -> bool:
     try:
         resp = requests.get(
             verify_url,
             params={"memo": memo, "wallet": wallet_address},
-            headers={"Authorization": f"Bearer {gate_secret}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
         resp.raise_for_status()

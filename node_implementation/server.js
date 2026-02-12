@@ -21,7 +21,7 @@ app.use(agentPaymentsGate({
   challengeSecret: process.env.CHALLENGE_SECRET,
   homeWalletAddress: process.env.HOME_WALLET_ADDRESS,
   verifyUrl: process.env.AGENTPAYMENTS_VERIFY_URL,
-  gateApiSecret: process.env.AGENTPAYMENTS_GATE_SECRET,
+  apiKey: process.env.AGENTPAYMENTS_API_KEY,
 }));
 
 app.get('/.well-known/agent-access.json', (_req, res) => {

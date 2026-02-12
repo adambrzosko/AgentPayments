@@ -39,7 +39,7 @@ class GateMiddleware:
             raise ValueError(f"HOME_WALLET_ADDRESS '{wallet_address}' is not a valid Solana public key (expected 32-44 base58 characters).")
         debug = settings.DEBUG
         _verify_url = getattr(settings, "AGENTPAYMENTS_VERIFY_URL", "")
-        _gate_secret = getattr(settings, "AGENTPAYMENTS_GATE_SECRET", "")
+        _api_key = getattr(settings, "AGENTPAYMENTS_API_KEY", "")
         network = "devnet" if debug else "mainnet-beta"
 
         pathname = request.path
@@ -78,11 +78,11 @@ class GateMiddleware:
             if not wallet_address:
                 return JsonResponse({"error": "server_error", "message": "Payment verification unavailable."}, status=500)
 
-            if not _verify_url or not _gate_secret:
+            if not _verify_url or not _api_key:
                 return JsonResponse({"error": "server_error", "message": "Payment verification not configured."}, status=500)
 
             payment_memo = derive_payment_memo(agent_key, secret)
-            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _gate_secret, cache_key=agent_key)
+            paid = verify_payment_via_backend(payment_memo, wallet_address, _verify_url, _api_key, cache_key=agent_key)
             if not paid:
                 return JsonResponse({
                     "error": "payment_required",

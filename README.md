@@ -7,6 +7,9 @@ Stripe-style goal: vendors should install/import our package and add only a coup
 - Deployment folders are integration demos only.
 - Deployment folders should contain minimal wiring/config (import + a few lines), not duplicated gate logic.
 
+## Verification Service
+- `verify_service/`: Standalone payment verification backend. Watches the Solana blockchain directly for USDC payments. Each merchant gets their own scoped API key. SDKs call this service (not llm_wallet_hub) to verify agent payments.
+
 ## Deployments
 These exist to prove the same shared gate can be integrated across common web architectures with thin per-platform wrappers.
 
