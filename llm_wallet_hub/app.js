@@ -643,6 +643,47 @@ app.get('/api/keys', authUser, async (req, res) => {
   res.json(keys);
 });
 
+app.patch('/api/keys/:id', authUser, async (req, res) => {
+  try {
+    const { dailySolCap, maxSolPerPayment, allowlistedRecipients } = req.body;
+
+    if (dailySolCap != null && (!Number.isFinite(Number(dailySolCap)) || Number(dailySolCap) <= 0))
+      return res.status(400).json({ error: 'Invalid dailySolCap' });
+    if (maxSolPerPayment != null && (!Number.isFinite(Number(maxSolPerPayment)) || Number(maxSolPerPayment) <= 0))
+      return res.status(400).json({ error: 'Invalid maxSolPerPayment' });
+
+    if (USE_POSTGRES) {
+      const result = await pool.query(`SELECT * FROM api_keys WHERE id = $1 AND user_id = $2 LIMIT 1`, [req.params.id, req.user.id]);
+      if (!result.rows[0]) return res.status(404).json({ error: 'Key not found' });
+      const key = mapApiKeyRow(result.rows[0]);
+
+      const newCap = dailySolCap != null ? Number(dailySolCap) : key.dailySolCap;
+      const newMax = maxSolPerPayment != null ? Number(maxSolPerPayment) : key.maxSolPerPayment;
+      const newAllow = Array.isArray(allowlistedRecipients)
+        ? allowlistedRecipients.map(parseSolanaAddress).filter(Boolean)
+        : key.allowlistedRecipients;
+
+      await pool.query(
+        `UPDATE api_keys SET daily_sol_cap = $1, max_sol_per_payment = $2, allowlisted_recipients = $3::jsonb WHERE id = $4 AND user_id = $5`,
+        [newCap, newMax, JSON.stringify(newAllow), req.params.id, req.user.id]
+      );
+      return res.json({ ...key, dailySolCap: newCap, maxSolPerPayment: newMax, allowlistedRecipients: newAllow, keyHash: undefined });
+    }
+
+    const key = req.db.apiKeys.find((k) => k.id === req.params.id && k.userId === req.user.id);
+    if (!key) return res.status(404).json({ error: 'Key not found' });
+
+    if (dailySolCap != null) key.dailySolCap = Number(dailySolCap);
+    if (maxSolPerPayment != null) key.maxSolPerPayment = Number(maxSolPerPayment);
+    if (Array.isArray(allowlistedRecipients)) key.allowlistedRecipients = allowlistedRecipients.map(parseSolanaAddress).filter(Boolean);
+    writeDb(req.db);
+
+    res.json({ ...key, keyHash: undefined });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/policy', authUser, async (req, res) => {
   const { maxSolPerPayment, dailySolCap, allowlistedRecipients } = req.body;
   if (maxSolPerPayment != null) {

@@ -66,6 +66,12 @@
   </div>
 
   <div class="card">
+    <h3>My Keys</h3>
+    <button onclick="loadKeys()">Load Keys</button>
+    <div id="keysList"></div>
+  </div>
+
+  <div class="card">
     <h3>System Prompt</h3>
     <select id="model">
       <option value="gpt">GPT</option>
@@ -169,6 +175,33 @@ async function requestFaucetTopup() {
   const data = await r.json();
   faucetResult.textContent = JSON.stringify(data, null, 2);
   if (r.ok) await loadMe();
+}
+
+async function loadKeys() {
+  const r = await fetch('/api/keys', { headers: headers() });
+  const keys = await r.json();
+  const container = document.getElementById('keysList');
+  if (!Array.isArray(keys) || keys.length === 0) { container.innerHTML = '<p class="muted">No keys found.</p>'; return; }
+  container.innerHTML = keys.map(k => `
+    <div style="border:1px solid #eee;border-radius:8px;padding:10px;margin:8px 0">
+      <strong>${k.name}</strong> <span class="muted">(${k.keyPrefix}...)</span>
+      <div class="row" style="margin-top:6px">
+        <label>Daily cap: <input type="number" step="0.001" id="cap_${k.id}" value="${k.dailySolCap ?? ''}" /></label>
+        <label>Max/payment: <input type="number" step="0.001" id="max_${k.id}" value="${k.maxSolPerPayment ?? ''}" /></label>
+      </div>
+      <button onclick="updateKey('${k.id}')" style="margin-top:6px">Save</button>
+    </div>`).join('');
+}
+
+async function updateKey(id) {
+  const cap = document.getElementById('cap_' + id).value;
+  const max = document.getElementById('max_' + id).value;
+  const body = {};
+  if (cap !== '') body.dailySolCap = Number(cap);
+  if (max !== '') body.maxSolPerPayment = Number(max);
+  const r = await fetch('/api/keys/' + id, { method: 'PATCH', headers: headers(), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (r.ok) { alert('Key updated'); loadKeys(); } else { alert(data.error || 'Update failed'); }
 }
 
 async function loadPrompt() {
