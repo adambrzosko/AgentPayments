@@ -14,6 +14,8 @@ const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const MEMO_PROGRAM_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MIN_PAYMENT_USDC = 0.01;
 const SIG_SCAN_LIMIT = 50;
+const RPC_RETRIES = 4;
+const RETRYABLE_MESSAGES = ['429', 'Too Many Requests', 'fetch failed', 'ETIMEDOUT', 'ECONNRESET'];
 
 function isDevnet(rpcUrl) {
   return String(rpcUrl || '').toLowerCase().includes('devnet');
@@ -21,6 +23,33 @@ function isDevnet(rpcUrl) {
 
 function getUsdcMint(rpcUrl) {
   return isDevnet(rpcUrl) ? USDC_MINT_DEVNET : USDC_MINT_MAINNET;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableError(err) {
+  const msg = String(err?.message || err || '');
+  return RETRYABLE_MESSAGES.some((s) => msg.includes(s));
+}
+
+async function withRpcRetry(fn, label) {
+  let lastErr;
+  for (let i = 0; i < RPC_RETRIES; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableError(err) || i === RPC_RETRIES - 1) {
+        throw err;
+      }
+      const waitMs = 250 * Math.pow(2, i);
+      console.warn(`[verify-service] ${label} retry ${i + 1}/${RPC_RETRIES} after error: ${String(err?.message || err)}`);
+      await sleep(waitMs);
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -48,7 +77,10 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   // Collect addresses to scan: main wallet + its USDC ATAs
   const addressesToScan = [walletAddress];
   try {
-    const tokenAccounts = await getTokenAccounts(connection, walletAddress, usdcMint);
+    const tokenAccounts = await withRpcRetry(
+      () => getTokenAccounts(connection, walletAddress, usdcMint),
+      'getTokenAccountsByOwner'
+    );
     addressesToScan.push(...tokenAccounts);
   } catch {
     // If token account lookup fails, still try the main wallet
@@ -58,7 +90,17 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   const seen = new Set();
   const allSigs = [];
   for (const addr of addressesToScan) {
-    const sigs = await connection.getSignaturesForAddress(new PublicKey(addr), { limit: SIG_SCAN_LIMIT }, 'confirmed');
+    let sigs = [];
+    try {
+      sigs = await withRpcRetry(
+        () => connection.getSignaturesForAddress(new PublicKey(addr), { limit: SIG_SCAN_LIMIT }, 'confirmed'),
+        'getSignaturesForAddress'
+      );
+    } catch (err) {
+      console.warn(`[verify-service] failed to fetch signatures for ${addr}: ${String(err?.message || err)}`);
+      continue;
+    }
+
     for (const s of sigs) {
       if (!seen.has(s.signature)) {
         seen.add(s.signature);
@@ -71,10 +113,19 @@ export async function verifyPaymentOnChain(rpcUrl, walletAddress, memo) {
   for (const sigInfo of allSigs) {
     if (sigInfo.err) continue;
 
-    const tx = await connection.getParsedTransaction(sigInfo.signature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: 'confirmed',
-    });
+    let tx;
+    try {
+      tx = await withRpcRetry(
+        () => connection.getParsedTransaction(sigInfo.signature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: 'confirmed',
+        }),
+        'getParsedTransaction'
+      );
+    } catch (err) {
+      console.warn(`[verify-service] failed to fetch transaction ${sigInfo.signature}: ${String(err?.message || err)}`);
+      continue;
+    }
     if (!tx) continue;
 
     const instructions = tx.transaction.message.instructions || [];
