@@ -79,7 +79,10 @@
       <span class="balance-label">USDC</span>
       <span class="balance-value" id="bal-usdc">-</span>
     </div>
-    <button class="btn-secondary" onclick="refreshWallet()">Refresh Balances</button>
+    <div class="row">
+      <button class="btn-secondary" onclick="refreshWallet()">Refresh Balances</button>
+      <button class="btn-secondary" onclick="createNewWallet()">Create New Wallet</button>
+    </div>
     <p class="copied hidden" id="wallet-copied">Copied!</p>
 
     <div class="hidden" id="secret-key-section" style="margin-top: 16px; padding: 16px; border: 1px solid #e8c547; border-radius: 8px; background: #fffbe6;">
@@ -153,10 +156,7 @@ async function handleAuth(endpoint) {
   show('step-wallet');
   show('step-key');
   document.getElementById('wallet-address').textContent = currentWallet;
-  if (data.walletSecretKey) {
-    document.getElementById('wallet-secret').textContent = data.walletSecretKey;
-    show('secret-key-section');
-  }
+  hide('secret-key-section');
   refreshWallet();
 }
 
@@ -176,6 +176,18 @@ async function copyWallet() {
   await navigator.clipboard.writeText(currentWallet);
   show('wallet-copied');
   setTimeout(() => hide('wallet-copied'), 2000);
+}
+
+async function createNewWallet() {
+  if (!confirm('This will replace your current wallet. Any remaining funds in the old wallet will be inaccessible unless you saved the secret key. Continue?')) return;
+  const r = await fetch('/api/wallet/new', { method: 'POST', headers: h() });
+  const data = await r.json();
+  if (!r.ok) return;
+  currentWallet = data.walletAddress;
+  document.getElementById('wallet-address').textContent = currentWallet;
+  document.getElementById('wallet-secret').textContent = data.walletSecretKey;
+  show('secret-key-section');
+  refreshWallet();
 }
 
 async function copySecret() {

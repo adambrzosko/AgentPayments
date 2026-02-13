@@ -475,7 +475,7 @@ app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), async (req, res
       writeDb(db);
     }
 
-    res.json({ sessionToken, walletSecretKey: secret58, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
+    res.json({ sessionToken, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -521,6 +521,32 @@ app.get('/api/me', authUser, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
   const balanceUsdc = await getUsdcBalance(req.user.wallet.publicKey);
   res.json({ id: req.user.id, email: req.user.email, walletAddress: req.user.wallet.publicKey, balanceSol, balanceUsdc, policy: req.user.policy });
+});
+
+app.post('/api/wallet/new', authUser, async (req, res) => {
+  try {
+    const kp = Keypair.generate();
+    const secret58 = bs58.encode(kp.secretKey);
+    const publicKey = kp.publicKey.toBase58();
+    const encryptedSecret = encryptSecret(secret58);
+
+    if (USE_POSTGRES) {
+      await pool.query(
+        `UPDATE users SET wallet_public_key = $1, wallet_encrypted_secret = $2::jsonb WHERE id = $3`,
+        [publicKey, JSON.stringify(encryptedSecret), req.user.id]
+      );
+    } else {
+      const user = req.db.users.find((u) => u.id === req.user.id);
+      if (user) {
+        user.wallet = { publicKey, encryptedSecret };
+        writeDb(req.db);
+      }
+    }
+
+    res.json({ walletAddress: publicKey, walletSecretKey: secret58 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/skill-template', (_req, res) => {
