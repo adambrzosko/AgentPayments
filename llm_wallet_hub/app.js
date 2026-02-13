@@ -475,7 +475,7 @@ app.post('/api/signup', rateLimit('signup', 20, 15 * 60 * 1000), async (req, res
       writeDb(db);
     }
 
-    res.json({ sessionToken, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
+    res.json({ sessionToken, walletSecretKey: secret58, user: { id: user.id, email: user.email, walletAddress: user.wallet.publicKey, policy: user.policy } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -81,6 +81,15 @@
     </div>
     <button class="btn-secondary" onclick="refreshWallet()">Refresh Balances</button>
     <p class="copied hidden" id="wallet-copied">Copied!</p>
+
+    <div class="hidden" id="secret-key-section" style="margin-top: 16px; padding: 16px; border: 1px solid #e8c547; border-radius: 8px; background: #fffbe6;">
+      <label style="font-size: 0.9rem; color: #8a6d00;">Secret Key — save this now, it won't be shown again</label>
+      <div class="wallet-addr" style="margin-top: 8px; margin-bottom: 0;">
+        <div class="mono-box" id="wallet-secret" style="font-size: 0.75rem;">-</div>
+        <button class="btn-secondary" onclick="copySecret()">Copy</button>
+      </div>
+      <p class="copied hidden" id="secret-copied">Copied!</p>
+    </div>
   </div>
 
   <!-- Step 3: Create Tool Key -->
@@ -144,6 +153,10 @@ async function handleAuth(endpoint) {
   show('step-wallet');
   show('step-key');
   document.getElementById('wallet-address').textContent = currentWallet;
+  if (data.walletSecretKey) {
+    document.getElementById('wallet-secret').textContent = data.walletSecretKey;
+    show('secret-key-section');
+  }
   refreshWallet();
 }
 
@@ -163,6 +176,14 @@ async function copyWallet() {
   await navigator.clipboard.writeText(currentWallet);
   show('wallet-copied');
   setTimeout(() => hide('wallet-copied'), 2000);
+}
+
+async function copySecret() {
+  const text = document.getElementById('wallet-secret').textContent;
+  if (!text || text === '-') return;
+  await navigator.clipboard.writeText(text);
+  show('secret-copied');
+  setTimeout(() => hide('secret-copied'), 2000);
 }
 
 async function createKey() {
