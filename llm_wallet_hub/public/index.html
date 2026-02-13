@@ -182,6 +182,7 @@ async function createKey() {
   // Fetch skill template and inject real key
   const tr = await fetch('/api/skill-template');
   let skill = await tr.text();
+  skill = skill.replace(/<TOOL_KEY>/g, data.rawKey);
   skill = skill.replace(/ak_ea416074f28549be7b0786fa13865ce9819e71c2/g, data.rawKey);
   document.getElementById('skill-output').value = skill;
   show('step-skill');
