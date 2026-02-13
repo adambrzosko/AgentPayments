@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 const APP_BASE_URL = process.env.APP_BASE_URL || '';
 const MASTER_KEY = process.env.MASTER_KEY || '';
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const PAYMENTS_DRY_RUN = process.env.PAYMENTS_DRY_RUN === 'true';
 const BOT_WALLET_SECRET_KEY = process.env.BOT_WALLET_SECRET_KEY || '';
 const BOT_WALLET_FILE = process.env.BOT_WALLET_FILE || path.resolve(__dirname, '..', 'jsons', 'bot-wallet.json');
@@ -44,6 +44,7 @@ if (MASTER_KEY && MASTER_KEY.length < 32) {
 }
 
 const DB_PATH = process.env.DB_PATH || (process.env.VERCEL ? '/tmp/llm-wallet-hub-db.json' : path.join(__dirname, 'data', 'db.json'));
+const explorerCluster = isDevnetRpc(SOLANA_RPC_URL) ? 'devnet' : 'mainnet-beta';
 const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
 
 const app = express();
@@ -735,12 +736,12 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
         );
         if (existingResult.rows[0]) {
           const existing = mapPaymentRow(existingResult.rows[0]);
-          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=devnet` });
+          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=${explorerCluster}` });
         }
       } else {
         const existing = req.db.payments.find((p) => p.userId === req.user.id && p.idempotencyKey === idem);
         if (existing) {
-          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=devnet` });
+          return res.json({ ok: true, replay: true, signature: existing.signature, payment: existing, explorer: `https://explorer.solana.com/tx/${existing.signature}?cluster=${explorerCluster}` });
         }
       }
     }
@@ -813,7 +814,7 @@ app.post('/api/tool/pay', rateLimit('pay', 120, 15 * 60 * 1000), authTool, async
       writeDb(req.db);
     }
 
-    res.json({ ok: true, token: 'USDC', amountUsdc: amount, signature, explorer: `https://explorer.solana.com/tx/${signature}?cluster=devnet`, payment });
+    res.json({ ok: true, token: 'USDC', amountUsdc: amount, signature, explorer: `https://explorer.solana.com/tx/${signature}?cluster=${explorerCluster}`, payment });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

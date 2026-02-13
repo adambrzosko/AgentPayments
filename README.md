@@ -12,28 +12,28 @@ Stripe-style goal: a website owner installs/imports one package, adds a few line
 ## Public URLs
 
 ### Gated website demos
-- Edge (Cloudflare Worker): https://agentpayments-cloudflare.matthew-newell.workers.dev
-- Python (Django, Oracle VM): https://clankertax.tearsheet.one
-- Node (Express behind nginx path): https://clankertax.tearsheet.one/node/
-- Next.js (Vercel alias): https://nextjsdeployment-five.vercel.app
+- Edge (Cloudflare Worker): https://agentpayments-cloudflare.matthew-newell.workers.dev - FULLY WORKING
+- Python (Django, Oracle VM): https://clankertax.tearsheet.one - FULLY WORKING
+- Node (Express behind nginx path): https://clankertax.tearsheet.one/node/ - FULLY WORKING
+- Next.js (Vercel alias): https://nextjsdeployment-five.vercel.app - FULLY WORKING
 
 
 - Next.js (direct Vercel deployment): https://nextjsdeployment-h3sqvhkx0-matt-newells-projects.vercel.app
 - Node direct subdomain (if DNS active): https://node.clankertax.tearsheet.one
 - Django direct IP HTTP: http://140.238.68.134
 
-### Verify Service (separate service)
+### Verify Service
 - Verify service UI/base URL: https://verifyservice-omega.vercel.app
 - Verify endpoint used by SDKs: `https://verifyservice-omega.vercel.app/verify`
 - Merchant signup endpoint: `https://verifyservice-omega.vercel.app/merchants/signup`
 - Merchant metadata endpoint: `https://verifyservice-omega.vercel.app/merchants/me`
 
-### Wallet Hub (separate service)
+### Wallet Hub
 - Wallet hub UI/API (LLM wallet hub deployment): https://llmwallethub.vercel.app
 
 ### On-chain wallet and network
-- Current configured recipient wallet address: `5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft`
-- Solana RPC currently configured in local env: `https://api.mainnet-beta.solana.com`
+- Current configured recipient wallet address: `2UhakLCBSPgWyoVmTCqJ9fgtnXzW9SPeLTyJ5QsT79GF`
+- Solana network: mainnet (via Helius RPC)
 - Token: USDC SPL token (network-specific mint handled by verifier)
 
 ## Verification flow (agent request to on-chain confirmation)

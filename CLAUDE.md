@@ -36,6 +36,16 @@ Therefore:
 - Avoid destructive git/file operations unless explicitly requested.
 - Do not add secrets, keys, or sensitive values to tracked files.
 
+## Testing
+After meaningful changes, run the relevant test suite:
+- Node SDK: `cd sdk/node && npm test`
+- Edge SDK: `cd sdk/edge && npm test`
+- Python SDK: `cd sdk/python && python -m pytest tests/`
+- Verify service: `cd verify_service && npm test`
+- Node demo: `cd node_implementation && npm test`
+- Django demo: `cd python_implementation/django && python manage.py test gate`
+- Wallet hub: `cd llm_wallet_hub && npm test`
+
 ## Verification
 - After Django edits, run:
   - `python python_implementation/django/manage.py check`

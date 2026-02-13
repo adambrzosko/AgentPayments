@@ -3,23 +3,31 @@ import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
-import { verifyPaymentOnChain } from './chain.js';
+import { verifyPaymentOnChain, BulkVerifier } from './chain.js';
 
 const PORT = process.env.PORT || 3100;
 const DATABASE_URL = process.env.DATABASE_URL || '';
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const HOME_WALLET_ADDRESS = process.env.HOME_WALLET_ADDRESS || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 
-if (!DATABASE_URL) throw new Error('DATABASE_URL is required');
-if (!HOME_WALLET_ADDRESS) throw new Error('HOME_WALLET_ADDRESS is required');
-if (!ADMIN_SECRET || ADMIN_SECRET.length < 16) throw new Error('ADMIN_SECRET must be at least 16 chars');
+const IS_TEST = process.env.NODE_ENV === 'test';
+
+const bulkVerifier = (HOME_WALLET_ADDRESS && SOLANA_RPC_URL)
+  ? new BulkVerifier(SOLANA_RPC_URL, HOME_WALLET_ADDRESS)
+  : null;
+
+if (!IS_TEST) {
+  if (!DATABASE_URL) throw new Error('DATABASE_URL is required');
+  if (!HOME_WALLET_ADDRESS) throw new Error('HOME_WALLET_ADDRESS is required');
+  if (!ADMIN_SECRET || ADMIN_SECRET.length < 16) throw new Error('ADMIN_SECRET must be at least 16 chars');
+}
 
 const { Pool } = pg;
-const pool = new Pool({
+const pool = DATABASE_URL ? new Pool({
   connectionString: DATABASE_URL,
   ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
-});
+}) : null;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -119,8 +127,10 @@ app.get('/verify', async (req, res) => {
       return res.json({ paid: true });
     }
 
-    // 2. On-demand chain check
-    const result = await verifyPaymentOnChain(SOLANA_RPC_URL, wallet, memo);
+    // 2. On-demand chain check (bulk-coalesced when possible)
+    const result = bulkVerifier
+      ? await bulkVerifier.verify(memo)
+      : await verifyPaymentOnChain(SOLANA_RPC_URL, wallet, memo);
     if (result.paid) {
       // Cache the result
       const id = crypto.randomUUID();
@@ -232,7 +242,9 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 // Start
 // ---------------------------------------------------------------------------
 
-if (process.env.VERCEL) {
+if (IS_TEST) {
+  // In test mode, skip DB init and server listen
+} else if (process.env.VERCEL) {
   // On Vercel, just ensure schema exists; no listen needed
   initDb().catch((err) => console.error('Failed to initialize DB:', err));
 } else {
@@ -242,3 +254,4 @@ if (process.env.VERCEL) {
 }
 
 export default app;
+export { hashKey, generateApiKey, initDb };

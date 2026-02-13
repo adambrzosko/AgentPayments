@@ -182,6 +182,12 @@ function challengePage(returnTo, nonce) {
   return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' } });
 }
 
+export {
+  hmacSign, generateAgentKey, isValidAgentKey, derivePaymentMemo,
+  normalizeVerifyEndpoint, isPublicPath, isBrowser, getCookie, isValidCookie,
+  challengePage, jsonResponse,
+};
+
 export function createEdgeGate(options = {}) {
   const {
     fetchUpstream,

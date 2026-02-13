@@ -37,6 +37,10 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(staticDir, 'index.html'));
 });
 
-app.listen(port, host, () => {
-  console.log(`Node deployment listening on http://${host}:${port}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(port, host, () => {
+    console.log(`Node deployment listening on http://${host}:${port}`);
+  });
+}
+
+module.exports = app;

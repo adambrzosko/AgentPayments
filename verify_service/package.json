@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "node app.js",
-    "dev": "node --watch app.js"
+    "dev": "node --watch app.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",

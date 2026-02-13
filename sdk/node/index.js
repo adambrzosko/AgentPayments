@@ -341,3 +341,13 @@ function agentPaymentsGate(config = {}) {
 }
 
 module.exports = { agentPaymentsGate };
+
+// Expose internals for unit testing only
+if (process.env.NODE_ENV === 'test') {
+  module.exports._internals = {
+    hmacSign, generateAgentKey, isValidAgentKey, derivePaymentMemo,
+    normalizeVerifyEndpoint, isPublicPath, isBrowser, getCookie, isValidCookie,
+    challengePage, PaymentCache, RateLimiter,
+    COOKIE_NAME, COOKIE_MAX_AGE,
+  };
+}
