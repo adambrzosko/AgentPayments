@@ -519,7 +519,13 @@ app.post('/api/login', rateLimit('login', 30, 15 * 60 * 1000), async (req, res) 
 
 app.get('/api/me', authUser, async (req, res) => {
   const balanceSol = await getBalanceSol(req.user.wallet.publicKey);
-  res.json({ id: req.user.id, email: req.user.email, walletAddress: req.user.wallet.publicKey, balanceSol, policy: req.user.policy });
+  const balanceUsdc = await getUsdcBalance(req.user.wallet.publicKey);
+  res.json({ id: req.user.id, email: req.user.email, walletAddress: req.user.wallet.publicKey, balanceSol, balanceUsdc, policy: req.user.policy });
+});
+
+app.get('/api/skill-template', (_req, res) => {
+  const content = fs.readFileSync(path.join(__dirname, 'SKILL.md'), 'utf8');
+  res.type('text/plain').send(content);
 });
 
 app.post('/api/faucet', authUser, async (req, res) => {
