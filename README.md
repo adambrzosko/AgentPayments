@@ -1,53 +1,119 @@
 # AgentPayments
 
-Stripe-style goal: vendors should install/import our package and add only a couple of lines to protect routes.
+Stripe-style payment gate for web resources. Vendors install an SDK, add a few lines of code, and their site is protected: browsers pass a JavaScript challenge, AI agents pay with Solana USDC.
 
-## Architecture direction (important)
-- Bot-blocking/payment logic should live in shared package-style code (`sdk/` now, publishable package next).
-- Deployment folders are integration demos only.
-- Deployment folders should contain minimal wiring/config (import + a few lines), not duplicated gate logic.
+## Quick Start
 
-## Deployments
-There are three separate test deployments (nodejs, django, netlify/typescript + cloudflare).
-These exist to prove the same shared gate can be integrated across common web architectures.
+Pick your runtime and add the gate in under 5 lines:
 
-- `edge_implementation/cloudflare_worker/`: Worker wrapper + static assets.
-- `python_implementation/django/`: Django wrapper + demo static files.
-- `edge_implementation/netlify/`: Netlify edge wrapper + demo static files.
-- `node_implementation/`: Express integration demo (thin wrapper over `@agentpayments/node` local package).
-- `sdk/`: Shared gate logic used by deployment wrappers (JS/TS + Python).
-  - `sdk/node/`: **Implementation #1 complete** (`@agentpayments/node`, Express-first).
-  - `sdk/edge/`: **Implementation #2 complete** (`@agentpayments/edge`, Cloudflare/Netlify/Vercel adapters).
-  - `sdk/python/`: **Implementation #3 complete** (`agentpayments-python`, Django/FastAPI/Flask adapters).
-  - `sdk/next/`: **Implementation #4 complete** (`@agentpayments/next`, middleware wrapper for Next.js).
+**Node/Express**
+```js
+const { agentPaymentsGate } = require('@agentpayments/node');
+app.use(agentPaymentsGate({
+  challengeSecret: process.env.CHALLENGE_SECRET,
+  homeWalletAddress: process.env.HOME_WALLET_ADDRESS,
+}));
+```
 
-## SDK roadmap (keep this clear)
-1. ✅ `@agentpayments/node` (Express middleware; first shipping target)
-2. ✅ `@agentpayments/edge` (shared fetch runtime + Cloudflare/Netlify/Vercel adapters)
-3. ✅ `agentpayments-python` (Django/FastAPI/Flask adapters)
-4. ✅ `@agentpayments/next` (first-class Next.js middleware wrapper)
-5. ⏳ Proxy adapter (Nginx/Envoy style enforcement)
+**Next.js** (`middleware.ts`)
+```ts
+import { createNextMiddleware } from '@agentpayments/next';
+export default createNextMiddleware();
+export const config = { matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'] };
+```
 
-Rule: deployment folders stay thin; core gate behavior belongs in `sdk/` packages.
+**Cloudflare Workers**
+```js
+import { createAgentPaymentsWorker } from '@agentpayments/edge/cloudflare';
+export default createAgentPaymentsWorker({ assetsBinding: 'ASSETS' });
+```
 
-## Public demo URLs
-- **Edge implementation (Cloudflare Worker)**: https://agentpayments-cloudflare.matthew-newell.workers.dev
-- **Django/Python implementation (Oracle VM, HTTPS)**: https://clankertax.tearsheet.one
-- **Next.js implementation (Vercel alias)**: https://nextjsdeployment-five.vercel.app
+**Django** (`settings.py`)
+```python
+MIDDLEWARE = [
+    "agentpayments_python.django_adapter.GateMiddleware",
+    # ...
+]
+```
 
-Also, in case needed:
-- **Django Oracle VM, direct IP HTTP**: http://140.238.68.134
-- **Next.js Vercel, actual URL**: https://nextjsdeployment-h3sqvhkx0-matt-newells-projects.vercel.app
+**FastAPI / Flask** — see [Python SDK README](sdk/python/README.md).
 
+## How It Works
 
-## Django (Oracle)
-For Oracle Always Free VM deployment of the Django app, see `python_implementation/django/DEPLOY_ORACLE.md`.
+1. **Browser visitors** receive a transparent JavaScript challenge page (canvas fingerprint + nonce). If they pass, a signed cookie grants access for 24 hours.
+2. **API clients (agents)** without a browser get a `402 Payment Required` response containing a generated agent key. They send a USDC payment on Solana with the key as the transaction memo, then include `X-Agent-Key: <key>` on subsequent requests.
+3. **Public paths** (`/robots.txt`, `/.well-known/*`) bypass the gate entirely.
+
+See [API Reference](API_REFERENCE.md) for full request/response details.
+
+## Architecture
+
+```
+sdk/                          Shared gate logic (source of truth)
+  constants.json              Centralized Solana addresses, limits, config
+  node/                       @agentpayments/node  (Express middleware, CommonJS)
+  edge/                       @agentpayments/edge  (Cloudflare/Netlify/Vercel, ESM)
+  next/                       @agentpayments/next  (Next.js middleware wrapper)
+  python/                     agentpayments-python  (Django/FastAPI/Flask adapters)
+
+node_implementation/          Express demo (thin wrapper)
+next_implementation/          Next.js demo (thin wrapper)
+edge_implementation/
+  cloudflare_worker/          Cloudflare Worker demo
+  netlify/                    Netlify Edge demo
+python_implementation/
+  django/                     Django demo
+scripts/                      Utility and demo scripts
+```
+
+**Rule:** deployment folders stay thin. Core gate behavior belongs in `sdk/` packages.
+
+## SDK Roadmap
+
+1. :white_check_mark: `@agentpayments/node` — Express middleware (CommonJS + TypeScript types)
+2. :white_check_mark: `@agentpayments/edge` — Fetch-runtime gate with Cloudflare, Netlify, and Vercel adapters (ESM + TypeScript types)
+3. :white_check_mark: `agentpayments-python` — Django, FastAPI, and Flask adapters
+4. :white_check_mark: `@agentpayments/next` — First-class Next.js middleware wrapper
+5. :hourglass_flowing_sand: Proxy adapter (Nginx/Envoy style enforcement)
+
+## Security Features
+
+All SDKs share the same security posture:
+
+- **Timing-safe comparison** for all HMAC checks (agent keys, cookies, nonce signatures)
+- **Payment verification caching** — 10-minute TTL, 1000-entry max, avoids redundant RPC calls
+- **Rate limiting** — 20 challenge verifications per minute per IP
+- **Input size limits** — agent key (64), nonce (128), return URL (2048), fingerprint (128)
+- **Wallet address validation** — base58 format, 32-44 characters, checked at init
+- **Default secret detection** — warns in debug mode, throws/500s in production
+- **Structured JSON logging** (Node/Edge SDKs)
+
+See [SECURITY.md](SECURITY.md) for the full threat model.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `CHALLENGE_SECRET` | Yes (production) | HMAC secret for signing cookies, nonces, and agent keys. Must be unique and strong. |
+| `HOME_WALLET_ADDRESS` | Yes | Solana wallet address to receive USDC payments. |
+| `SOLANA_RPC_URL` | No | Custom Solana RPC endpoint. Defaults to devnet/mainnet based on `DEBUG`. |
+| `USDC_MINT` | No | Custom USDC mint address. Defaults to devnet/mainnet based on `DEBUG`. |
+| `DEBUG` | No | Set to `"false"` for production (mainnet). Defaults to `true` (devnet). |
+
+## Public Demo URLs
+
+- **Cloudflare Worker**: https://agentpayments-cloudflare.matthew-newell.workers.dev
+- **Django (Oracle VM)**: https://clankertax.tearsheet.one
+- **Next.js (Vercel)**: https://nextjsdeployment-five.vercel.app
 
 ## JSON Files
-- `.test-keypair.json`: Local devnet Solana keypair used by `test_payment.py` and `demo.py` as a persistent payer wallet. Safe
-  to delete; scripts will recreate it.
-- `bot-wallet.json`: Wallet data used by the bot visitor script (`bot_visitor.py`).
-- `wallet-keys.json`: Generated wallet keys used by local scripts (created by `setup_wallet.py`).
-- `edge_implementation/netlify/.well-known/agent-access.json`: Public discovery file served at `/.well-known/agent-access.json` for the
-  Netlify demo site.
-- `python_implementation/django/.well-known/agent-access.json`: Same discovery file for the Django demo site.
+
+- `.test-keypair.json`: Local devnet Solana keypair used by test scripts. Safe to delete; scripts will recreate it.
+- `bot-wallet.json`: Wallet data used by the bot visitor script.
+- `wallet-keys.json`: Generated wallet keys used by local scripts.
+- `edge_implementation/netlify/.well-known/agent-access.json`: Public discovery file for Netlify demo.
+- `python_implementation/django/.well-known/agent-access.json`: Public discovery file for Django demo.
+
+## Django (Oracle VM)
+
+For Oracle Always Free VM deployment, see `python_implementation/django/DEPLOY_ORACLE.md`.
