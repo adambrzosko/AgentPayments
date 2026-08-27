@@ -54,8 +54,8 @@ Public Solana endpoints heavily rate-limit `getSignaturesForAddress`/`getTransac
 ### Pricing & access model
 One 0.01 USDC payment currently buys indefinite access. Vendors need: configurable price, payment-amount → access-duration mapping (or per-request metering), per-route pricing tiers, and key revocation.
 
-### Publishing — **package metadata complete**
-npm packages (`@agentpayments/node`, `@agentpayments/edge`) have `package.json` with description, license, exports, files, keywords, repository, and `publishConfig`. Python package (`agentpayments-python`) has `pyproject.toml` with license, classifiers (Beta, Python 3.10–3.12, MIT), project URLs, and optional extras for each framework. Still required before shipping: README for each package, `npm publish` / `twine upload`, and git tag.
+### Publishing — **done**
+`@agentpayments/node`, `@agentpayments/edge` (npm) and `agentpayments-python` (PyPI) are published at v0.1.0, verified installable from a clean environment with no monorepo context. `sdk/next` stays unpublished (`private: true`) until it's ready for real installs. Remaining: the packages' baked-in `PLATFORM_API_URL` default still points at the placeholder `api.agentpayments.dev` — the real hosted platform is now live at `api.agentpayments.cloud` (custom domain connected). A version bump + republish is needed for that to be the zero-config default; deferred for now, tracked in `TODO.md`.
 
 ## P2 — Quality and scale
 
