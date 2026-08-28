@@ -18,12 +18,14 @@
 * ~~Flesh out backend~~ — hosted platform API (`api/`) live on Railway: vendor accounts, hosted key issuance, usage dashboard
 * ~~Charge vendors for hosted-platform usage~~ — on-chain fee (2% of `minPayment`, same-transaction two-leg verification), proven end-to-end against real devnet transactions
 * ~~Connect a real domain~~ — `agentpayments.cloud` → Railway, `api.agentpayments.cloud` live with valid SSL
+* ~~Get a paid Solana RPC provider~~ — Helius; confirmed it resolves the 429s public devnet RPC hit mid-session, documented in ROADMAP
+* ~~Purge committed private keys from git history~~ — `jsons/wallet-keys.json`/`jsons/bot-wallet.json` removed from all history on `main`/`onchain-platform-fee`/`testsAndImprovements`, force-pushed to the public repo, verified clean
+* ~~Prove the gate works on real mainnet~~ — live smoke test: real 0.01 USDC + memo transaction on Solana mainnet, verified via the deployed gate's own on-chain verification logic, access correctly granted (tx `66Fri43fJn2jwi3dCQRPPMwoQjiquAs3fohjhd6R4Z5wXn38MWb79sP2r7iqJcJoQezkBtnC6ro39KCGrj22hTG9`)
 
 ### In Progress
 * Improve bot communication — ChatGPT and other LLM agents don't reliably read the 402 response instructions
 
 ### Up Next
-* **Paid Solana RPC provider (Helius/Triton/QuickNode)** — public devnet RPC rate-limited us mid-test this session (confirms ROADMAP's "Production RPC strategy" item is real, not theoretical); needed before this handles real traffic without flaking
 * Republish the 3 SDK packages with `PLATFORM_API_URL` defaulting to `api.agentpayments.cloud` instead of the old placeholder `api.agentpayments.dev` — deferred for now; until then, hosted-platform users must pass `platformApiUrl` / `AGENTPAYMENTS_PLATFORM_URL` explicitly
 * A live, no-install demo (watch an agent actually pay through a paywall) — biggest lever for a HN/launch post landing well
 * Proxy adapter (Nginx/Envoy style enforcement)

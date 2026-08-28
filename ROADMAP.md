@@ -25,14 +25,8 @@ Verification re-scans the last 100 signatures, so a paid key stopped working onc
 ### 6. Nonce replay — **fixed (best-effort on edge)**
 Nonces now carry a random component and are tracked in an in-memory consumed set after use. On multi-isolate edge runtimes this is per-isolate until a shared state backend lands (see P1).
 
-### 7. Private keys committed to git — **gitignore fixed; history purge required**
-`jsons/wallet-keys.json` and `jsons/bot-wallet.json` are tracked in git. `jsons/` is now in `.gitignore` so no new keys will be committed. The existing history still contains the keys — you must purge it before open-sourcing:
-
-```bash
-# Install git-filter-repo (pip install git-filter-repo)
-git filter-repo --path jsons/ --invert-paths
-# Rotate the wallets — assume the devnet keys are compromised.
-```
+### 7. Private keys committed to git — **fixed**
+`jsons/wallet-keys.json` and `jsons/bot-wallet.json` were tracked in git; `jsons/` is now gitignored so no new keys get committed. History has been purged: `git filter-repo --path jsons/ --invert-paths` run against a mirror clone, force-pushed to `main`/`onchain-platform-fee`/`testsAndImprovements` on the public repo, verified zero commits reference `jsons/` anywhere in the pushed history. The devnet keys that were exposed should still be treated as compromised — history rewriting stops future exposure, it doesn't erase any copy already scraped/cloned before the purge.
 
 ## P1 — Adoption blockers
 
@@ -48,8 +42,8 @@ Rate limiter and payment cache are in-memory Maps — per-isolate on Cloudflare/
 ### x402 protocol compatibility — **fixed**
 LLM agents don't reliably parse the custom 402 JSON (noted in TODO). Fixed: all three SDKs (Node, Edge, Python) now emit `x402Version: 1`, `accepts: [PaymentRequirements]`, and an `X-PAYMENT-REQUIRED` base64-encoded header on every 402 response, following the x402 SVM `exact` scheme spec. Chain IDs use CAIP-2 format (`solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` mainnet, `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` devnet). Amount is in base units (micro-USDC). x402 utilities also exported from `agentpayments_python` (`build_payment_requirements`, `enrich_402_body`, `payment_required_header`).
 
-### Production RPC strategy
-Public Solana endpoints heavily rate-limit `getSignaturesForAddress`/`getTransaction`. Document paid RPC (Helius/Triton/QuickNode) as a requirement for production, and add an optional webhook-based payment indexer so verification is a single lookup instead of a chain scan.
+### Production RPC strategy — **documented, paid RPC confirmed**
+Public Solana endpoints heavily rate-limit `getSignaturesForAddress`/`getTransaction` — confirmed live this session (a burst of `getTransaction` calls during real devnet verification testing hit 429s against `api.devnet.solana.com`). Fixed by switching to [Helius](https://helius.dev): the same burst pattern (20 concurrent `getTransaction` calls against a heavily-used test wallet) returned all 200s against Helius's devnet endpoint. Recommended for anyone running AgentPayments in production — set `solanaRpcUrl`/`SOLANA_RPC_URL`/`solana_rpc_url` to your Helius endpoint (all three SDKs accept a string or array, so you can keep the public endpoint as a fallback: `[heliusUrl, 'https://api.devnet.solana.com']`). Remaining: add an optional webhook-based payment indexer so verification is a single lookup instead of a chain scan.
 
 ### Pricing & access model
 One 0.01 USDC payment currently buys indefinite access. Vendors need: configurable price, payment-amount → access-duration mapping (or per-request metering), per-route pricing tiers, and key revocation.
