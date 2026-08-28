@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentPayments — charge AI agents to access your site</title>
+<meta name="description" content="A Stripe-style payment gate. Install the SDK, add a few lines, and AI agents pay USDC on Solana before they can access your API or content.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚦</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: #F4F3EE;
+    --surface: #FFFFFF;
+    --surface-2: #EBEAE3;
+    --ink: #12151B;
+    --ink-muted: #5C6270;
+    --rule: #DBDAD2;
+    --amber: #B87415;
+    --amber-soft: #F3E3C8;
+    --green: #1C9A5C;
+    --green-soft: #D8F0E3;
+    --term-bg: #12151B;
+    --term-ink: #E7E9EE;
+    --term-muted: #7C8493;
+    --shadow: 0 1px 2px rgba(18,21,27,0.06), 0 12px 32px rgba(18,21,27,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F1217;
+      --surface: #171B22;
+      --surface-2: #1E232C;
+      --ink: #F0F2F5;
+      --ink-muted: #8B93A3;
+      --rule: #2A3140;
+      --amber: #F0A83A;
+      --amber-soft: #2E2311;
+      --green: #3DD68C;
+      --green-soft: #10281E;
+      --term-bg: #0A0C10;
+      --term-ink: #E7E9EE;
+      --term-muted: #6B7280;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 16px 40px rgba(0,0,0,0.45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F1217;
+    --surface: #171B22;
+    --surface-2: #1E232C;
+    --ink: #F0F2F5;
+    --ink-muted: #8B93A3;
+    --rule: #2A3140;
+    --amber: #F0A83A;
+    --amber-soft: #2E2311;
+    --green: #3DD68C;
+    --green-soft: #10281E;
+    --term-bg: #0A0C10;
+    --term-ink: #E7E9EE;
+    --term-muted: #6B7280;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 16px 40px rgba(0,0,0,0.45);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--amber-soft); }
+  a { color: inherit; }
+  code, .mono, .display {
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  h1, h2, h3 { font-family: "JetBrains Mono", monospace; font-weight: 700; text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+  section { padding: 88px 0; }
+  @media (max-width: 640px) { section { padding: 56px 0; } }
+
+  /* ---------- Nav ---------- */
+  nav.top {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--rule);
+  }
+  nav.top .wrap { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; }
+  .brand { font-family: "JetBrains Mono", monospace; font-weight: 800; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .nav-links { display: flex; gap: 28px; font-size: 0.92rem; }
+  .nav-links a { text-decoration: none; color: var(--ink-muted); }
+  .nav-links a:hover { color: var(--ink); }
+  @media (max-width: 640px) { .nav-links { display: none; } }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 76px 0 60px; }
+  .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 44px; } }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    color: var(--amber);
+    background: var(--amber-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 11px;
+    border-radius: 100px;
+    margin-bottom: 22px;
+  }
+  h1.headline { font-size: clamp(2.1rem, 4.4vw, 3.1rem); line-height: 1.08; }
+  h1.headline .accent { color: var(--amber); }
+  .sub { margin-top: 20px; font-size: 1.12rem; color: var(--ink-muted); max-width: 46ch; }
+  .cta-row { display: flex; gap: 14px; margin-top: 34px; flex-wrap: wrap; }
+  .btn {
+    font-family: "IBM Plex Sans", sans-serif;
+    font-weight: 600;
+    font-size: 0.96rem;
+    padding: 13px 22px;
+    border-radius: 8px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid transparent;
+    transition: transform 0.15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--ink); color: var(--bg); }
+  :root:not([data-theme="light"]) .btn-primary,
+  :root[data-theme="dark"] .btn-primary { background: var(--amber); color: #16110A; }
+  .btn-ghost { border-color: var(--rule); color: var(--ink); }
+
+  .install {
+    margin-top: 30px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.9rem;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--ink-muted);
+  }
+  .install code { color: var(--ink); }
+
+  /* ---------- Terminal demo ---------- */
+  .term {
+    background: var(--term-bg);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+  .term-bar span { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.15); }
+  .term-bar .label { margin-left: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.76rem; color: var(--term-muted); }
+  .term-body { padding: 22px 20px 26px; font-family: "JetBrains Mono", monospace; font-size: 0.86rem; color: var(--term-ink); min-height: 220px; }
+  .term-line { color: var(--term-muted); margin-bottom: 14px; }
+  .term-line .prompt { color: var(--green); }
+  .term-frame { position: relative; height: 148px; }
+  .term-state {
+    position: absolute; inset: 0;
+    opacity: 0;
+    animation: cycle 9s infinite;
+  }
+  .term-state.s2 { animation-delay: 3s; }
+  .term-state.s3 { animation-delay: 6s; }
+  .term-state.s1 { animation-name: cycleA; }
+  .term-state.s2 { animation-name: cycleB; }
+  .term-state.s3 { animation-name: cycleC; }
+  @keyframes cycleA { 0%,3%{opacity:0} 6%,30%{opacity:1} 34%{opacity:0} 100%{opacity:0} }
+  @keyframes cycleB { 0%{opacity:0} 33%,36%{opacity:0} 39%,63%{opacity:1} 67%{opacity:0} 100%{opacity:0} }
+  @keyframes cycleC { 0%{opacity:0} 66%,69%{opacity:0} 72%,96%{opacity:1} 100%{opacity:0} }
+  .status-line { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .status-code { font-weight: 700; }
+  .status-402 .status-code { color: var(--amber); }
+  .status-200 .status-code { color: var(--green); }
+  .status-pending .status-code { color: var(--term-muted); }
+  pre.body { margin: 0; color: var(--term-muted); white-space: pre-wrap; }
+  pre.body .k { color: #9FB4D6; }
+  pre.body .v { color: var(--term-ink); }
+  @media (prefers-reduced-motion: reduce) {
+    .term-state { animation: none !important; opacity: 0; }
+    .term-state.s3 { opacity: 1; }
+  }
+
+  /* ---------- Feature grid ---------- */
+  .section-head { max-width: 60ch; margin-bottom: 44px; }
+  .kicker { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--amber); margin-bottom: 10px; }
+  h2.h2 { font-size: clamp(1.5rem, 2.6vw, 2rem); }
+  .section-dek { color: var(--ink-muted); margin-top: 12px; font-size: 1.02rem; }
+
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  @media (max-width: 820px) { .grid3 { grid-template-columns: 1fr; } }
+  .feature {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 26px 24px;
+  }
+  .feature .num { font-family: "JetBrains Mono", monospace; font-size: 0.8rem; color: var(--ink-muted); }
+  .feature h3 { font-size: 1.08rem; margin-top: 10px; }
+  .feature p { color: var(--ink-muted); font-size: 0.94rem; margin-top: 10px; }
+
+  /* ---------- Code sample ---------- */
+  .code-section { background: var(--surface-2); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .tab {
+    font-family: "JetBrains Mono", monospace; font-size: 0.82rem;
+    padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    background: transparent; border: 1px solid var(--rule); color: var(--ink-muted);
+  }
+  .tab[aria-selected="true"] { background: var(--surface); color: var(--ink); border-color: var(--ink); }
+  .code-card {
+    background: var(--term-bg); border-radius: 10px; box-shadow: var(--shadow);
+    padding: 22px 24px; overflow-x: auto;
+  }
+  .code-card pre { margin: 0; font-family: "JetBrains Mono", monospace; font-size: 0.85rem; color: var(--term-ink); line-height: 1.65; }
+  .code-card .c1 { color: #6B7280; }
+  .code-card .c2 { color: #9FB4D6; }
+  .code-card .c3 { color: #F0A83A; }
+  .lang-panel { display: none; }
+  .lang-panel.active { display: block; }
+
+  /* ---------- Steps ---------- */
+  .steps { display: flex; flex-direction: column; }
+  .step {
+    display: grid; grid-template-columns: 64px 1fr; gap: 20px;
+    padding: 26px 0; border-top: 1px solid var(--rule);
+  }
+  .step:last-child { padding-bottom: 0; }
+  .step .n { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 1.3rem; color: var(--ink-muted); }
+  .step h3 { font-size: 1.05rem; margin-bottom: 6px; }
+  .step p { color: var(--ink-muted); font-size: 0.95rem; margin: 0; }
+
+  /* ---------- Footer ---------- */
+  footer { border-top: 1px solid var(--rule); padding: 48px 0; }
+  .foot-grid { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }
+  .foot-links { display: flex; gap: 24px; flex-wrap: wrap; font-size: 0.9rem; }
+  .foot-links a { text-decoration: none; color: var(--ink-muted); }
+  .foot-links a:hover { color: var(--ink); }
+  .foot-meta { color: var(--ink-muted); font-size: 0.85rem; margin-top: 10px; }
+  a:focus-visible, .tab:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="dot"></span>AgentPayments</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/adambrzosko/AgentPayments">GitHub</a>
+      <a href="https://github.com/adambrzosko/AgentPayments/blob/main/API_REFERENCE.md" rel="noopener">Docs</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow">HTTP 402 · finally used for something</span>
+      <h1 class="headline">Charge AI agents<br>to access <span class="accent">your&nbsp;site</span>.</h1>
+      <p class="sub">A Stripe-style payment gate for the agent economy. Install the SDK, add a few lines, and bots pay USDC on Solana before they get past your paywall — humans never see a thing.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#install">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/adambrzosko/AgentPayments">View on GitHub</a>
+      </div>
+      <div class="install">
+        <span>$</span><code>npm install @agentpayments/node</code>
+      </div>
+    </div>
+
+    <div class="term" aria-hidden="true">
+      <div class="term-bar"><span></span><span></span><span></span><span class="label">agent.sh</span></div>
+      <div class="term-body">
+        <div class="term-line"><span class="prompt">$</span> curl https://vendor-site.com/api/report.pdf</div>
+        <div class="term-frame">
+          <div class="term-state s1">
+            <div class="status-line status-pending"><span class="status-code">···</span><span>sending request</span></div>
+          </div>
+          <div class="term-state s2">
+            <div class="status-line status-402"><span class="status-code">402</span><span>Payment Required</span></div>
+            <pre class="body">{
+  <span class="k">"wallet_address"</span>: <span class="v">"5rXZ...tfBft"</span>,
+  <span class="k">"amount"</span>: <span class="v">"0.01"</span>,
+  <span class="k">"token"</span>: <span class="v">"USDC"</span>,
+  <span class="k">"memo"</span>: <span class="v">"agp_f021ec2d..."</span>
+}</pre>
+          </div>
+          <div class="term-state s3">
+            <div class="status-line status-200"><span class="status-code">200</span><span>OK — paid on Solana ✓</span></div>
+            <pre class="body"><span class="k">"data"</span>: <span class="v">"report.pdf, 4.2mb"</span>
+
+<span style="color:var(--term-muted)">verified on-chain in one request.
+no signup, no API key, no human.</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">How it works</div>
+      <h2 class="h2">Three lines of middleware. Zero new infrastructure.</h2>
+      <p class="section-dek">The gate sits in front of whatever you're already serving — an API, a PDF, a dataset. It doesn't touch your app logic, and it never sees a browser visitor.</p>
+    </div>
+    <div class="grid3">
+      <div class="feature">
+        <div class="num">01</div>
+        <h3>Browsers pass straight through</h3>
+        <p>A lightweight, invisible proof-of-work challenge tells humans from bots. Real visitors never notice the gate is there.</p>
+      </div>
+      <div class="feature">
+        <div class="num">02</div>
+        <h3>Agents get a 402, with instructions</h3>
+        <p>Non-browser traffic — crawlers, bots, LLM agents — gets an HTTP 402 back with exactly what to pay and where, in a machine-readable format.</p>
+      </div>
+      <div class="feature">
+        <div class="num">03</div>
+        <h3>Payment verified on-chain, access granted</h3>
+        <p>The agent sends USDC on Solana with its key as the memo. The gate checks the chain directly — no accounts, no webhooks, no card numbers.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="code-section" id="install">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Install</div>
+      <h2 class="h2">Pick your stack.</h2>
+      <p class="section-dek">Node, edge runtimes, and Python are first-class. The gate logic is identical everywhere.</p>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Install snippets">
+      <button class="tab" role="tab" aria-selected="true" data-lang="node">Node / Express</button>
+      <button class="tab" role="tab" aria-selected="false" data-lang="edge">Cloudflare Workers</button>
+      <button class="tab" role="tab" aria-selected="false" data-lang="python">Python</button>
+    </div>
+
+    <div class="code-card">
+      <div class="lang-panel active" data-lang="node">
+<pre><span class="c1">// npm install @agentpayments/node</span>
+<span class="c3">const</span> { agentPaymentsGate } = <span class="c3">require</span>(<span class="c2">'@agentpayments/node'</span>);
+
+app.use(agentPaymentsGate({
+  challengeSecret: process.env.CHALLENGE_SECRET,
+  homeWalletAddress: process.env.HOME_WALLET_ADDRESS,
+}));</pre>
+      </div>
+      <div class="lang-panel" data-lang="edge">
+<pre><span class="c1">// npm install @agentpayments/edge</span>
+<span class="c3">import</span> { createAgentPaymentsWorker } <span class="c3">from</span> <span class="c2">'@agentpayments/edge/cloudflare'</span>;
+
+<span class="c3">export default</span> createAgentPaymentsWorker({
+  assetsBinding: <span class="c2">'ASSETS'</span>,
+});</pre>
+      </div>
+      <div class="lang-panel" data-lang="python">
+<pre><span class="c1"># pip install agentpayments-python</span>
+<span class="c3">MIDDLEWARE</span> = [
+    <span class="c2">"agentpayments_python.django_adapter.GateMiddleware"</span>,
+    <span class="c1"># ...</span>
+]</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">The agent side</div>
+      <h2 class="h2">No signup. No API key exchange. Just pay and go.</h2>
+      <p class="section-dek">An agent that hits a 402 doesn't need to register anywhere — it reads the payment instructions straight out of the response and pays on-chain.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <div><h3>Request the resource</h3><p>Same as any other HTTP call — no headers, no auth, no prior setup.</p></div>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <div><h3>Read the 402 response</h3><p>Wallet address, amount, and a memo to attach — plus a standards-compliant x402 payload for agent frameworks that already speak it.</p></div>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <div><h3>Send USDC on Solana, retry</h3><p>Include the issued key as <code>X-Agent-Key</code> on the next request. The gate checks the chain directly and lets it through.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-grid">
+    <div>
+      <a class="brand" href="#top"><span class="dot"></span>AgentPayments</a>
+      <p class="foot-meta">Open source, MIT licensed. Solana devnet &amp; mainnet.</p>
+    </div>
+    <div class="foot-links">
+      <a href="https://github.com/adambrzosko/AgentPayments">GitHub</a>
+      <a href="https://www.npmjs.com/package/@agentpayments/node">npm</a>
+      <a href="https://pypi.org/project/agentpayments-python/">PyPI</a>
+      <a href="https://github.com/adambrzosko/AgentPayments/blob/main/API_REFERENCE.md">Documentation</a>
+      <a href="https://github.com/adambrzosko/AgentPayments/issues">Support</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  const panels = document.querySelectorAll('.lang-panel');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.setAttribute('aria-selected', 'false'));
+      tab.setAttribute('aria-selected', 'true');
+      const lang = tab.dataset.lang;
+      panels.forEach(p => p.classList.toggle('active', p.dataset.lang === lang));
+    });
+  });
+</script>
+
+</body>
+</html>
