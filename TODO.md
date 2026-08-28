@@ -23,12 +23,12 @@
 * ~~Prove the gate works on real mainnet~~ — live smoke test: real 0.01 USDC + memo transaction on Solana mainnet, verified via the deployed gate's own on-chain verification logic, access correctly granted (tx `66Fri43fJn2jwi3dCQRPPMwoQjiquAs3fohjhd6R4Z5wXn38MWb79sP2r7iqJcJoQezkBtnC6ro39KCGrj22hTG9`)
 * ~~Republish the 3 SDK packages with the real `PLATFORM_API_URL` default~~ — `@agentpayments/node@0.1.1`, `@agentpayments/edge@0.1.1`, `agentpayments-python==0.1.1` all live, default now `api.agentpayments.cloud`; hosted-platform users no longer need to pass `platformApiUrl` explicitly
 * ~~A live, no-install demo~~ — `demo/` deployed, live at `demo.agentpayments.cloud`, linked from the landing page nav + hero CTA. Real devnet-funded agent wallet plays the agent role for real: 402 → on-chain USDC + memo payment → retry → granted, streamed live over SSE. Along the way, found and documented a real bug in ROADMAP: Node's `fetch()` always sends a header `isBrowser()` treats as browser-proof, misclassifying real fetch()-based agents — flagged as a follow-up task, not yet fixed
+* ~~Proxy adapter~~ — `sdk/proxy/` (`@agentpayments/proxy`): standalone reverse proxy for backends with no native SDK (any language/stack). Wraps the same `@agentpayments/node` gate logic; verified end-to-end against a real non-Node upstream (Python `http.server`) — unpaid requests never reach it, public paths pass through, a real devnet payment gets forwarded correctly. 3 automated tests passing
 
 ### In Progress
 * Improve bot communication — ChatGPT and other LLM agents don't reliably read the 402 response instructions (see the `isBrowser()`/fetch() finding in ROADMAP — likely a real contributor)
 
 ### Up Next
-* Proxy adapter (Nginx/Envoy style enforcement)
 * Write a comprehensive test script to hit all deployments
 * Fastify and Koa adapter wrappers (reuse Node SDK core)
 
