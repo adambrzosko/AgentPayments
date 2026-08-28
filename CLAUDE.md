@@ -62,6 +62,7 @@ Therefore:
 | Node SDK | `node -e "require('./sdk/node/index.js')"` |
 | Node tests | `node --test sdk/node/index.test.js` |
 | Proxy adapter tests | `node --test sdk/proxy/index.test.js` |
+| Live deployments | `node scripts/verify-deployments.js` (add `--full` to also run a real devnet payment through the live demo) |
 | Edge/Cloudflare | `npx wrangler deploy` from `edge_implementation/cloudflare_worker/` |
 | Edge constants parity | `node scripts/check-edge-constants.js` |
 | Python syntax | `python3 -c "import ast; ast.parse(open(f).read())"` for each changed file |
