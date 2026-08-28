@@ -22,12 +22,12 @@
 * ~~Purge committed private keys from git history~~ — `jsons/wallet-keys.json`/`jsons/bot-wallet.json` removed from all history on `main`/`onchain-platform-fee`/`testsAndImprovements`, force-pushed to the public repo, verified clean
 * ~~Prove the gate works on real mainnet~~ — live smoke test: real 0.01 USDC + memo transaction on Solana mainnet, verified via the deployed gate's own on-chain verification logic, access correctly granted (tx `66Fri43fJn2jwi3dCQRPPMwoQjiquAs3fohjhd6R4Z5wXn38MWb79sP2r7iqJcJoQezkBtnC6ro39KCGrj22hTG9`)
 * ~~Republish the 3 SDK packages with the real `PLATFORM_API_URL` default~~ — `@agentpayments/node@0.1.1`, `@agentpayments/edge@0.1.1`, `agentpayments-python==0.1.1` all live, default now `api.agentpayments.cloud`; hosted-platform users no longer need to pass `platformApiUrl` explicitly
+* ~~A live, no-install demo~~ — `demo/` deployed, live at `demo.agentpayments.cloud`, linked from the landing page nav + hero CTA. Real devnet-funded agent wallet plays the agent role for real: 402 → on-chain USDC + memo payment → retry → granted, streamed live over SSE. Along the way, found and documented a real bug in ROADMAP: Node's `fetch()` always sends a header `isBrowser()` treats as browser-proof, misclassifying real fetch()-based agents — flagged as a follow-up task, not yet fixed
 
 ### In Progress
-* Improve bot communication — ChatGPT and other LLM agents don't reliably read the 402 response instructions
+* Improve bot communication — ChatGPT and other LLM agents don't reliably read the 402 response instructions (see the `isBrowser()`/fetch() finding in ROADMAP — likely a real contributor)
 
 ### Up Next
-* A live, no-install demo (watch an agent actually pay through a paywall) — biggest lever for a HN/launch post landing well
 * Proxy adapter (Nginx/Envoy style enforcement)
 * Write a comprehensive test script to hit all deployments
 * Fastify and Koa adapter wrappers (reuse Node SDK core)
