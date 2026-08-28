@@ -24,6 +24,8 @@ Therefore:
   - `sdk/edge/`: `@agentpayments/edge` (Cloudflare/Netlify/Vercel adapters, ESM, TypeScript types).
   - `sdk/python/`: `agentpayments-python` (Django/FastAPI/Flask adapters).
   - `sdk/next/`: `@agentpayments/next` (Next.js middleware wrapper).
+  - `sdk/fastify/`: `@agentpayments/fastify` (Fastify plugin, wraps the unmodified Node gate via `@fastify/express`).
+  - `sdk/koa/`: `@agentpayments/koa` (Koa middleware, adapts `ctx` to the gate's req/res surface directly).
   - `sdk/proxy/`: `@agentpayments/proxy` (standalone reverse proxy — gates any backend/language in front of it, for stacks with no native SDK).
   - `demo/`: live no-install demo, deployed at demo.agentpayments.cloud.
 - `python_implementation/django/`: Django integration demo.
@@ -61,6 +63,8 @@ Therefore:
 |---|---|
 | Node SDK | `node -e "require('./sdk/node/index.js')"` |
 | Node tests | `node --test sdk/node/index.test.js` |
+| Fastify wrapper tests | `node --test sdk/fastify/index.test.js` |
+| Koa wrapper tests | `node --test sdk/koa/index.test.js` |
 | Proxy adapter tests | `node --test sdk/proxy/index.test.js` |
 | Live deployments | `node scripts/verify-deployments.js` (add `--full` to also run a real devnet payment through the live demo) |
 | Edge/Cloudflare | `npx wrangler deploy` from `edge_implementation/cloudflare_worker/` |
