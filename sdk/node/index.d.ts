@@ -43,7 +43,7 @@ export interface AgentPaymentsGateConfig {
   challengeRateLimiter?: RateLimiter | null;
   /** Reject requests that do not arrive over HTTPS. Defaults to true outside debug mode. */
   requireHttps?: boolean;
-  /** Platform API key (ap_live_...) from api.agentpayments.dev. When set, agent keys are issued via the hosted platform (metered, billed) instead of locally. */
+  /** Platform API key (ap_live_...) from api.agentpayments.cloud. When set, agent keys are issued via the hosted platform (metered, billed) instead of locally. */
   apiKey?: string | null;
   /** Override the platform API URL for a self-hosted platform. */
   platformApiUrl?: string;

@@ -27,7 +27,7 @@ const USDC_DECIMALS = 6;
 const X402_VERSION = 1;
 const SOLANA_CHAIN_ID_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const SOLANA_CHAIN_ID_DEVNET = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
-const PLATFORM_API_URL = 'https://api.agentpayments.dev';
+const PLATFORM_API_URL = 'https://api.agentpayments.cloud';
 const HOSTED_KEY_PREFIX = 'agp_';
 
 // ---------------------------------------------------------------------------

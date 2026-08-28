@@ -659,7 +659,7 @@ function agentPaymentsGate(config = {}) {
     requireHttps: requireHttpsOpt,
     // -----------------------------------------------------------------------
     // Hosted key-issuance mode (business model moat):
-    //   apiKey:       Platform API key from api.agentpayments.dev (ap_live_...)
+    //   apiKey:       Platform API key from api.agentpayments.cloud (ap_live_...)
     //   platformApiUrl: Override for self-hosted platform (default: PLATFORM_API_URL)
     //
     // When apiKey is set, agent keys are issued via the platform (metered, billed)
