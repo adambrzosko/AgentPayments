@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentPayments — live demo</title>
+<meta name="description" content="Watch a real AI agent hit a paywall, get a 402, pay in USDC on Solana, and get back in — live, on real devnet transactions, no install required.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚦</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: #F4F3EE;
+    --surface: #FFFFFF;
+    --surface-2: #EBEAE3;
+    --ink: #12151B;
+    --ink-muted: #5C6270;
+    --rule: #DBDAD2;
+    --amber: #B87415;
+    --amber-soft: #F3E3C8;
+    --green: #1C9A5C;
+    --green-soft: #D8F0E3;
+    --term-bg: #12151B;
+    --term-ink: #E7E9EE;
+    --term-muted: #7C8493;
+    --shadow: 0 1px 2px rgba(18,21,27,0.06), 0 12px 32px rgba(18,21,27,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F1217; --surface: #171B22; --surface-2: #1E232C;
+      --ink: #F0F2F5; --ink-muted: #8B93A3; --rule: #2A3140;
+      --amber: #F0A83A; --amber-soft: #2E2311;
+      --green: #3DD68C; --green-soft: #10281E;
+      --term-bg: #0A0C10; --term-ink: #E7E9EE; --term-muted: #6B7280;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 16px 40px rgba(0,0,0,0.45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F1217; --surface: #171B22; --surface-2: #1E232C;
+    --ink: #F0F2F5; --ink-muted: #8B93A3; --rule: #2A3140;
+    --amber: #F0A83A; --amber-soft: #2E2311;
+    --green: #3DD68C; --green-soft: #10281E;
+    --term-bg: #0A0C10; --term-ink: #E7E9EE; --term-muted: #6B7280;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 16px 40px rgba(0,0,0,0.45);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    font-size: 17px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+  h1, h2 { font-family: "JetBrains Mono", monospace; font-weight: 700; text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 100px; }
+  nav.top {
+    border-bottom: 1px solid var(--rule);
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+  }
+  nav.top .inner { max-width: 760px; margin: 0 auto; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .brand { font-family: "JetBrains Mono", monospace; font-weight: 800; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  nav.top a.back { text-decoration: none; color: var(--ink-muted); font-size: 0.92rem; }
+  nav.top a.back:hover { color: var(--ink); }
+
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace; font-size: 0.8rem; color: var(--amber);
+    background: var(--amber-soft); display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 100px; margin-bottom: 18px;
+  }
+  h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; }
+  .sub { margin-top: 16px; font-size: 1.05rem; color: var(--ink-muted); max-width: 56ch; }
+
+  .runBtn {
+    margin-top: 32px; font-family: "IBM Plex Sans", sans-serif; font-weight: 600;
+    font-size: 1rem; padding: 14px 26px; border-radius: 8px; border: none;
+    cursor: pointer; background: var(--ink); color: var(--bg);
+  }
+  :root:not([data-theme="light"]) .runBtn, :root[data-theme="dark"] .runBtn { background: var(--amber); color: #16110A; }
+  .runBtn:disabled { opacity: 0.5; cursor: default; }
+
+  .log {
+    margin-top: 36px; background: var(--term-bg); border-radius: 12px; box-shadow: var(--shadow);
+    border: 1px solid rgba(255,255,255,0.06); overflow: hidden; min-height: 120px;
+  }
+  .log-bar { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+  .log-bar span { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.15); }
+  .log-bar .label { margin-left: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.76rem; color: var(--term-muted); }
+  .log-body { padding: 18px 20px 24px; font-family: "JetBrains Mono", monospace; font-size: 0.85rem; color: var(--term-ink); }
+  .log-body .empty { color: var(--term-muted); }
+
+  .step { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed rgba(255,255,255,0.08); }
+  .step:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .step .msg { color: var(--term-ink); }
+  .step .msg::before { content: "→ "; color: var(--term-muted); }
+  .step pre { margin: 8px 0 0; background: rgba(255,255,255,0.04); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 0.78rem; color: var(--term-muted); white-space: pre-wrap; word-break: break-all; }
+  .step a.explorer { display: inline-block; margin-top: 6px; color: var(--green); text-decoration: none; font-size: 0.8rem; }
+  .step a.explorer:hover { text-decoration: underline; }
+  .step.status-402 .msg::before { content: "402 "; color: var(--amber); font-weight: 700; }
+  .step.status-200 .msg::before { content: "200 "; color: var(--green); font-weight: 700; }
+  .step.status-error .msg { color: #E5484D; }
+  .step.status-error .msg::before { content: "✗ "; color: #E5484D; }
+
+  .note { margin-top: 28px; font-size: 0.88rem; color: var(--ink-muted); }
+  .note code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<nav class="top">
+  <div class="inner">
+    <a class="brand" href="https://agentpayments.cloud"><span class="dot"></span>AgentPayments</a>
+    <a class="back" href="https://agentpayments.cloud">← back</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="eyebrow">● live devnet demo</div>
+  <h1>Watch an AI agent pay its way through a paywall.</h1>
+  <p class="sub">This page holds a real Solana devnet wallet. Click the button and it plays the agent role for real: gets a 402, builds and signs an on-chain USDC payment, and retries — no install, no wallet connection, nothing simulated.</p>
+
+  <button class="runBtn" id="runBtn">Run the demo</button>
+
+  <div class="log">
+    <div class="log-bar">
+      <span></span><span></span><span></span>
+      <span class="label">agent session</span>
+    </div>
+    <div class="log-body" id="logBody">
+      <div class="empty">Waiting for you to click "Run the demo"...</div>
+    </div>
+  </div>
+
+  <p class="note">Every transaction here is real, on Solana <strong>devnet</strong> — test currency, zero monetary value. The exact same code path runs on mainnet for real vendors; see <a href="https://agentpayments.cloud">agentpayments.cloud</a> for the SDK.</p>
+</div>
+
+<script>
+const runBtn = document.getElementById('runBtn');
+const logBody = document.getElementById('logBody');
+
+function addStep(cls, html) {
+  if (logBody.querySelector('.empty')) logBody.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'step' + (cls ? ' ' + cls : '');
+  div.innerHTML = html;
+  logBody.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+runBtn.addEventListener('click', () => {
+  runBtn.disabled = true;
+  logBody.innerHTML = '';
+  const es = new EventSource('/api/run-demo');
+
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    switch (data.step) {
+      case 'start':
+        addStep('', `<div class="msg">${esc(data.message)}</div>`);
+        break;
+      case 'challenged':
+        addStep('status-402', `<div class="msg">${esc(data.message)}</div><pre>${esc(JSON.stringify(data.body, null, 2))}</pre>`);
+        break;
+      case 'building':
+        addStep('', `<div class="msg">${esc(data.message)}</div>`);
+        break;
+      case 'sent':
+        addStep('', `<div class="msg">${esc(data.message)}</div><a class="explorer" href="${data.explorer}" target="_blank" rel="noopener">View on Solana Explorer →</a>`);
+        break;
+      case 'confirmed':
+        addStep('', `<div class="msg">${esc(data.message)}</div>`);
+        break;
+      case 'retrying':
+      case 'waiting':
+        addStep('', `<div class="msg">${esc(data.message)}</div>`);
+        break;
+      case 'granted':
+        addStep('status-200', `<div class="msg">${esc(data.message)}</div><pre>${esc(JSON.stringify(data.body, null, 2))}</pre>`);
+        es.close();
+        runBtn.disabled = false;
+        break;
+      case 'error':
+        addStep('status-error', `<div class="msg">${esc(data.message)}</div>`);
+        es.close();
+        runBtn.disabled = false;
+        break;
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    runBtn.disabled = false;
+  };
+});
+</script>
+</body>
+</html>
