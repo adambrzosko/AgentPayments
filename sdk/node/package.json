@@ -1,6 +1,6 @@
 {
   "name": "@agentpayments/node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AgentPayments gate middleware for Node.js / Express — charge AI agents USDC on Solana before they can access your API",
   "license": "MIT",
   "main": "index.js",

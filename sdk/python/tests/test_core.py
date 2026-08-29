@@ -340,6 +340,25 @@ class TestBrowserDetection:
     def test_no_ua_not_browser(self):
         assert not is_browser_from_headers({"accept": "text/html"})
 
+    def test_real_browser_navigation_is_browser(self):
+        # Shape of a real top-level browser navigation: Sec-Fetch-Mode: navigate and
+        # Sec-Fetch-Dest: document alongside a genuine browser UA.
+        assert is_browser_from_headers({
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-dest": "document",
+            "user-agent": self.CHROME_UA,
+        })
+
+    def test_fetch_based_agent_not_browser(self):
+        # Node's built-in fetch() (undici) unconditionally sends sec-fetch-mode: cors
+        # on every request but never sets Sec-Fetch-Dest. Combined with a non-browser
+        # UA, this must NOT be classified as a browser or the agent never sees the
+        # 402 JSON it needs to read to pay.
+        assert not is_browser_from_headers({
+            "sec-fetch-mode": "cors",
+            "user-agent": "my-agent/1.0",
+        })
+
 
 class TestPublicPath:
     def test_robots_txt(self):

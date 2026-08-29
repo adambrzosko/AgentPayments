@@ -58,6 +58,23 @@ test('isBrowser detects sec-fetch headers on Request objects', () => {
   assert.equal(isBrowser(agent), false);
 });
 
+test('isBrowser treats real browser navigation as browser', () => {
+  const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  const nav = new Request('https://x.com', {
+    headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'user-agent': chromeUA },
+  });
+  assert.equal(isBrowser(nav), true);
+});
+
+test('isBrowser does not misclassify fetch()-shaped agent requests as browsers', () => {
+  // Node's built-in fetch() (undici) always sends sec-fetch-mode: cors but never
+  // sets Sec-Fetch-Dest. Combined with a non-browser UA this must not pass as a browser.
+  const agentFetch = new Request('https://x.com', {
+    headers: { 'sec-fetch-mode': 'cors', 'user-agent': 'my-agent/1.0' },
+  });
+  assert.equal(isBrowser(agentFetch), false);
+});
+
 test('getCookie parses from Web Request', () => {
   const req = new Request('https://x.com', { headers: { cookie: 'a=1; __agp_verified=abc; b=2' } });
   assert.equal(getCookie(req, '__agp_verified'), 'abc');

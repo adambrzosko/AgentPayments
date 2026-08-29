@@ -481,11 +481,19 @@ function isPublicPath(pathname) {
 
 // Sec-Fetch-* headers were introduced in Chrome 76 (2019) and Firefox 90 (2021).
 // Fall back to UA heuristic for older browsers so they get a challenge, not a 402.
+//
+// Only `Sec-Fetch-Mode: navigate` / `Sec-Fetch-Dest: document` count as proof of a
+// browser — these values are set exclusively for top-level navigations and are not
+// reachable through the fetch()/XHR APIs. Merely checking for the *presence* of
+// either header is not enough: Node's built-in fetch() (undici) unconditionally sends
+// `sec-fetch-mode: cors` on every outgoing request (not overridable via `headers`,
+// it's a forbidden header), which misclassified fetch()-based agents as browsers and
+// served them the HTML challenge instead of the 402 JSON they need to read to pay.
 const BROWSER_UA_RE = /(Chrome|Chromium|Firefox|Safari|Edg|OPR|Opera|SamsungBrowser|UCBrowser|Mobile Safari)/i;
 const BOT_UA_RE = /bot|crawl|spider|slurp|mediapartners|adsbot/i;
 
 function isBrowser(req) {
-  if (req.headers['sec-fetch-mode'] || req.headers['sec-fetch-dest']) return true;
+  if (req.headers['sec-fetch-mode'] === 'navigate' || req.headers['sec-fetch-dest'] === 'document') return true;
   const ua = req.headers['user-agent'] || '';
   return Boolean(ua && !BOT_UA_RE.test(ua) && BROWSER_UA_RE.test(ua));
 }

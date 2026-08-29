@@ -18,10 +18,18 @@ _BOT_UA_RE = _re.compile(r"bot|crawl|spider|slurp|mediapartners|adsbot", _re.IGN
 
 
 def is_browser_from_headers(headers: dict) -> bool:
-    # Primary signal: Fetch metadata headers (Chrome 76+, Firefox 90+).
-    if headers.get("sec-fetch-mode") or headers.get("sec-fetch-dest"):
+    # Primary signal: Fetch metadata headers, but only the values set exclusively for
+    # top-level navigations. These values are not reachable through the fetch()/XHR
+    # APIs, so this doesn't just check for *presence* of the header: Node's built-in
+    # fetch() (undici) unconditionally sends `sec-fetch-mode: cors` on every outgoing
+    # request (not overridable, it's a forbidden header), which previously
+    # misclassified fetch()-based agents as browsers and served them the HTML
+    # challenge instead of the 402 JSON they need to read to pay.
+    if headers.get("sec-fetch-mode") == "navigate" or headers.get("sec-fetch-dest") == "document":
         return True
-    # Fallback: UA heuristic for older browsers that don't send Sec-Fetch-*.
+    # Fallback: UA heuristic for older browsers that don't send Sec-Fetch-*, and for
+    # real in-page browser fetch()/XHR calls (Sec-Fetch-Mode: cors) which still carry
+    # a genuine browser User-Agent.
     ua = headers.get("user-agent") or headers.get("User-Agent") or ""
     if ua and not _BOT_UA_RE.search(ua) and _BROWSER_UA_RE.search(ua):
         return True
