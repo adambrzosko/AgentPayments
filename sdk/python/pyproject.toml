@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentpayments-python"
-version = "0.1.2"
+version = "0.2.0"
 description = "AgentPayments gate for Python web frameworks — charge AI agents USDC on Solana before they can access your API"
 readme = "README.md"
 license = { text = "MIT" }
