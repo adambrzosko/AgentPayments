@@ -89,6 +89,14 @@ class GateMiddleware:
         # Optional grant store for durable paid-key persistence. Set
         # AGENTPAYMENTS_GRANT_STORE to a GrantStore instance in settings.py.
         self.grant_store = getattr(settings, "AGENTPAYMENTS_GRANT_STORE", None)
+        # Pluggable rate limiters / payment cache — default to the built-in
+        # in-memory singletons (fine for single-process deployments). For
+        # multi-process (e.g. gunicorn -w 4), set these to Redis-backed
+        # instances from agentpayments_python.redis_store so state is shared
+        # across workers instead of each worker enforcing its own limit.
+        self.agent_key_rate_limiter = getattr(settings, "AGENTPAYMENTS_AGENT_KEY_RATE_LIMITER", None) or _agent_key_limiter
+        self.challenge_issue_rate_limiter = getattr(settings, "AGENTPAYMENTS_CHALLENGE_ISSUE_RATE_LIMITER", None) or _challenge_issue_limiter
+        self.payment_cache = getattr(settings, "AGENTPAYMENTS_PAYMENT_CACHE", None)
 
     def __call__(self, request):
         secret = self.secret
@@ -177,7 +185,7 @@ class GateMiddleware:
             elif not is_valid_agent_key(agent_key, secret):
                 return JsonResponse({"error": "forbidden", "message": "Invalid API key. Keys must be issued by this server."}, status=403)
 
-            if not _agent_key_limiter.check(_client_ip(request)):
+            if not self.agent_key_rate_limiter.check(_client_ip(request)):
                 return JsonResponse({"error": "rate_limited", "message": "Too many payment verification requests. Please wait and try again."}, status=429)
 
             if not wallet_address:
@@ -187,7 +195,7 @@ class GateMiddleware:
             if self.grant_store and self.grant_store.has(agent_key):
                 return self.get_response(request)
 
-            scan_result = _scan_for_payment(agent_key, wallet_address, self.rpc_url, self.usdc_mint, min_payment=price_config["min_payment"], fee_info=fee_info)
+            scan_result = _scan_for_payment(agent_key, wallet_address, self.rpc_url, self.usdc_mint, min_payment=price_config["min_payment"], fee_info=fee_info, payment_cache=self.payment_cache)
             paid = scan_result["paid"]
             if paid and self.grant_store:
                 tier = resolve_tier(scan_result["amount_paid"], price_config["pricing_tiers"])
@@ -215,7 +223,7 @@ class GateMiddleware:
             return self.get_response(request)
 
         # Rate-limit challenge page issuance to prevent unlimited nonce harvesting.
-        if not _challenge_issue_limiter.check(client_ip):
+        if not self.challenge_issue_rate_limiter.check(client_ip):
             return JsonResponse({"error": "rate_limited", "message": "Too many requests. Please try again later."}, status=429)
 
         nonce = make_nonce(secret, client_ip)
@@ -230,7 +238,10 @@ class GateMiddleware:
 @require_POST
 def challenge_verify(request):
     client_ip = _client_ip(request)
-    if not _challenge_limiter.check(client_ip):
+    # Optional: set AGENTPAYMENTS_CHALLENGE_VERIFY_RATE_LIMITER in settings.py
+    # to a Redis-backed limiter for multi-process deployments.
+    limiter = getattr(settings, "AGENTPAYMENTS_CHALLENGE_VERIFY_RATE_LIMITER", None) or _challenge_limiter
+    if not limiter.check(client_ip):
         return JsonResponse({"error": "rate_limited", "message": "Too many verification attempts. Please wait and try again."}, status=429)
     secret = settings.CHALLENGE_SECRET
     nonce = request.POST.get("nonce", "")[:MAX_NONCE_LENGTH]

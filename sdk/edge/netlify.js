@@ -1,12 +1,34 @@
 import { createEdgeGate } from './index.js';
 
 export function createNetlifyGate(options = {}) {
-  const { publicPathAllowlist = [], minPayment, powDifficulty } = options;
+  const {
+    publicPathAllowlist = [],
+    minPayment,
+    accessDuration,
+    pricingTiers,
+    routes,
+    powDifficulty,
+    verifyCrawlers,
+    requireHttps,
+    // Optional durable state backend — Netlify has no built-in equivalent to
+    // Cloudflare's KV binding, so bring your own Store implementation (e.g.
+    // backed by Netlify Blobs, Upstash Redis) if you need cross-invocation
+    // rate limiting / payment caching. Defaults to per-invocation InMemoryStore.
+    store,
+    getStore,
+  } = options;
 
   const gate = createEdgeGate({
     publicPathAllowlist,
     minPayment,
+    accessDuration,
+    pricingTiers,
+    routes,
     powDifficulty,
+    verifyCrawlers,
+    requireHttps,
+    store,
+    getStore,
     getClientIp: ({ context }) => context?.ip || 'unknown',
     envResolver: () => ({
       CHALLENGE_SECRET: Deno.env.get('CHALLENGE_SECRET') || 'default-secret-change-me',

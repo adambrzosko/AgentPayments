@@ -57,6 +57,15 @@ export default gate;
 
 > For Next.js projects, prefer [`@agentpayments/next`](../next/README.md) which wraps this adapter.
 
+`createAgentPaymentsWorker`, `createNetlifyGate`, and `createVercelEdgeGate` all accept the full `createEdgeGate` option set — `minPayment`, `accessDuration`, `pricingTiers`, `routes`, `verifyCrawlers`, `requireHttps` — not just the handful shown above. Unlike Cloudflare (which gets a durable `CloudflareKVStore` automatically when a KV binding is present), Netlify and Vercel have no built-in KV equivalent shipped here — pass your own `Store` implementation (backed by Netlify Blobs, Vercel KV, Upstash Redis, etc.) via the `store`/`getStore` option if you need rate limiting and payment caching to survive across invocations rather than resetting per-isolate:
+
+```ts
+createVercelEdgeGate({
+  ...,
+  store: new MyVercelKvStore(kv), // implement the Store interface from sdk/edge/index.js
+});
+```
+
 ## Generic / Custom Runtime
 
 ```js
