@@ -126,6 +126,59 @@ test('dashboard login rejects an invalid API key without setting a session cooki
   assert.ok(!login.headers['set-cookie']);
 });
 
+test('dashboard shows the on-chain fee section and a rotate-key link', async () => {
+  resetStore();
+  const reg = await register({ email: 'fee-dash@test.com', name: 'Fee Dash Vendor' });
+  const login = await request(app).post('/dashboard/login').type('form').send({ key: reg.body.apiKey });
+  const cookie = login.headers['set-cookie'].find((c) => c.startsWith('agp_dash=')).split(';')[0];
+
+  const dash = await request(app).get('/dashboard').set('Cookie', cookie);
+  assert.equal(dash.status, 200);
+  assert.match(dash.text, /On-chain platform fee/);
+  assert.match(dash.text, /Rotate API key/);
+  assert.doesNotMatch(dash.text, /Billing period/); // stale Stripe section is gone
+});
+
+test('/dashboard/rotate-key requires a session', async () => {
+  const res = await request(app).get('/dashboard/rotate-key');
+  assert.equal(res.status, 200);
+  assert.match(res.text, /Sign in/);
+});
+
+test('rotating the API key deactivates the old one and activates the new one', async () => {
+  resetStore();
+  const reg = await register({ email: 'rotate@test.com', name: 'Rotate Vendor' });
+  const oldKey = reg.body.apiKey;
+
+  const login = await request(app).post('/dashboard/login').type('form').send({ key: oldKey });
+  const cookie = login.headers['set-cookie'].find((c) => c.startsWith('agp_dash=')).split(';')[0];
+
+  const confirmPage = await request(app).get('/dashboard/rotate-key').set('Cookie', cookie);
+  assert.equal(confirmPage.status, 200);
+  assert.match(confirmPage.text, /Rotate now/);
+
+  const rotate = await request(app).post('/dashboard/rotate-key').set('Cookie', cookie);
+  assert.equal(rotate.status, 200);
+  assert.match(rotate.text, /was rotated/);
+  const newKeyMatch = rotate.text.match(/ap_live_[a-f0-9]+_[a-f0-9]+_[a-f0-9]+/);
+  assert.ok(newKeyMatch, 'new key should appear in the reveal banner');
+  const newKey = newKeyMatch[0];
+  assert.notEqual(newKey, oldKey);
+
+  // The old key is now dead...
+  const oldFails = await request(app).post('/v1/keys/issue').set('Authorization', `Bearer ${oldKey}`);
+  assert.equal(oldFails.status, 401);
+
+  // ...and the new one works.
+  const newWorks = await request(app).post('/v1/keys/issue').set('Authorization', `Bearer ${newKey}`);
+  assert.equal(newWorks.status, 200);
+
+  // The dashboard session itself (vendor-id based, not tied to the old key) still works.
+  const stillLoggedIn = await request(app).get('/dashboard').set('Cookie', cookie);
+  assert.equal(stillLoggedIn.status, 200);
+  assert.match(stillLoggedIn.text, /Rotate Vendor/);
+});
+
 test('stripe-billing module no-ops all functions when STRIPE_SECRET_KEY is unset', async () => {
   const { createCustomerAndSubscription, recordKeyIssuance, getCurrentUsage } = require('../stripe-billing');
   assert.equal(await createCustomerAndSubscription('a@b.com', 'x'), null);

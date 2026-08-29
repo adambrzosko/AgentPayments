@@ -4,7 +4,8 @@
  * Renders a self-contained HTML page with:
  *   - Key issuance stats (all-time + this month)
  *   - 30-day bar chart (inline SVG)
- *   - Billing status
+ *   - On-chain platform fee status
+ *   - API key management (masked, with rotation)
  *   - Account details
  */
 
@@ -18,15 +19,26 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/** Shows enough of the key to recognize it, masks the rest. */
+function maskApiKey(key) {
+  if (!key || key.length < 24) return key;
+  return `${key.slice(0, 16)}${'•'.repeat(16)}${key.slice(-6)}`;
+}
+
 /**
- * @param {object} vendor        — vendor record from store
- * @param {number} thisMonth     — keys issued this billing period
- * @param {Array}  dailyUsage    — [{ day: 'YYYY-MM-DD', count: N }, ...]
- * @param {object|null} stripeUsage — { totalUsage, periodStart, periodEnd } | null
+ * @param {object} vendor     — vendor record from store
+ * @param {number} thisMonth  — keys issued this billing period
+ * @param {Array}  dailyUsage — [{ day: 'YYYY-MM-DD', count: N }, ...]
+ * @param {object} opts
+ * @param {string|null} opts.platformFeeWallet   — current global fee wallet, or null if fee enforcement is off
+ * @param {number|null} opts.platformFeeRatePct  — current global fee rate, meaningful only when platformFeeWallet is set
+ * @param {string} [opts.newApiKey]              — set immediately after a rotation, shown once in a reveal banner
  */
-function dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage) {
+function dashboardHtml(vendor, thisMonth, dailyUsage, opts = {}) {
+  const { platformFeeWallet, platformFeeRatePct, newApiKey } = opts;
   const chart = buildChart(dailyUsage);
-  const billingHtml = buildBillingSection(vendor, thisMonth, stripeUsage);
+  const feeHtml = buildFeeSection(platformFeeWallet, platformFeeRatePct);
+  const apiKeyHtml = buildApiKeySection(vendor, newApiKey);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -62,7 +74,13 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage) {
     .badge.verified { background: #dcfce7; color: #16a34a; }
     .badge.unverified { background: #fef9c3; color: #a16207; }
     .badge.free { background: #e0e7ff; color: #3730a3; }
-    .billing-period { font-size: 13px; color: #666; margin-top: 8px; }
+    .fee-note { font-size: 13px; color: #444; line-height: 1.6; }
+    .new-key-banner { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+    .new-key-banner-title { font-size: 14px; font-weight: 700; color: #15803d; margin-bottom: 4px; }
+    .new-key-banner-sub { font-size: 12px; color: #4b5563; margin-bottom: 12px; }
+    .new-key-value { display: block; font-family: monospace; font-size: 13px; background: #fff; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; word-break: break-all; }
+    .rotate-link { display: inline-block; margin-top: 16px; font-size: 13px; color: #b91c1c; text-decoration: none; font-weight: 500; }
+    .rotate-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -96,7 +114,6 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage) {
         <div class="value" style="font-size:20px;padding-top:6px">
           <span class="badge free">${escapeHtml(vendor.plan || 'free')}</span>
         </div>
-        ${stripeUsage ? `<div class="sub">${Number(stripeUsage.totalUsage).toLocaleString()} units this period</div>` : ''}
       </div>
     </div>
 
@@ -107,7 +124,9 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage) {
       </div>
     </div>
 
-    ${billingHtml}
+    ${feeHtml}
+
+    ${apiKeyHtml}
 
     <div class="section">
       <h2>Account details</h2>
@@ -115,9 +134,6 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage) {
         <div class="info-row"><span class="k">Vendor ID</span><span class="v">${escapeHtml(vendor.vendor_id || vendor.vendorId)}</span></div>
         <div class="info-row"><span class="k">Email</span><span class="v">${escapeHtml(vendor.email)}</span></div>
         <div class="info-row"><span class="k">Member since</span><span class="v">${new Date(Number(vendor.created_at || vendor.createdAt)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>
-        ${vendor.stripe_customer_id || vendor.stripeCustomerId
-          ? `<div class="info-row"><span class="k">Stripe Customer</span><span class="v">${escapeHtml(vendor.stripe_customer_id || vendor.stripeCustomerId)}</span></div>`
-          : ''}
       </div>
     </div>
   </main>
@@ -171,21 +187,32 @@ function buildChart(dailyUsage) {
   </svg>`;
 }
 
-function buildBillingSection(vendor, thisMonth, stripeUsage) {
-  if (!stripeUsage) return '';
+function buildFeeSection(platformFeeWallet, platformFeeRatePct) {
   return `
     <div class="section">
-      <h2>Billing</h2>
-      <div class="info-grid">
+      <h2>On-chain platform fee</h2>
+      ${platformFeeWallet
+        ? `<p class="fee-note">Agents using your hosted keys pay an additional <strong>${escapeHtml(String(platformFeeRatePct))}%</strong> platform fee in the same Solana transaction as their payment to you. Your own payment still goes directly to your wallet — the fee is a separate transfer to AgentPayments, never routed through your account.</p>`
+        : `<p class="fee-note">No platform fee is currently active on your account. Payments from agents go directly to your wallet on-chain — AgentPayments never holds or routes your funds.</p>`}
+    </div>`;
+}
+
+function buildApiKeySection(vendor, newApiKey) {
+  const currentKey = vendor.api_key ?? vendor.apiKey;
+  return `
+    <div class="section">
+      <h2>API key</h2>
+      ${newApiKey ? `
+        <div class="new-key-banner">
+          <div class="new-key-banner-title">Your API key was rotated</div>
+          <div class="new-key-banner-sub">Update your SDK config with this key now — the old one stopped working immediately. It won't be shown again after you leave this page.</div>
+          <code class="new-key-value">${escapeHtml(newApiKey)}</code>
+        </div>` : `
         <div class="info-row">
-          <span class="k">Current period usage</span>
-          <span class="v">${Number(stripeUsage.totalUsage).toLocaleString()} keys</span>
-        </div>
-        <div class="info-row">
-          <span class="k">Billing period</span>
-          <span class="v" style="font-size:12px">${new Date(stripeUsage.periodStart).toLocaleDateString()} – ${new Date(stripeUsage.periodEnd).toLocaleDateString()}</span>
-        </div>
-      </div>
+          <span class="k">Current key</span>
+          <span class="v">${escapeHtml(maskApiKey(currentKey))}</span>
+        </div>`}
+      <a class="rotate-link" href="/dashboard/rotate-key">Rotate API key →</a>
     </div>`;
 }
 
@@ -229,4 +256,49 @@ function loginHtml(error) {
 </html>`;
 }
 
-module.exports = { dashboardHtml, loginHtml };
+// ---------------------------------------------------------------------------
+// Rotate-key confirmation page
+// ---------------------------------------------------------------------------
+
+function rotateKeyConfirmHtml(vendor) {
+  const currentKey = vendor.api_key ?? vendor.apiKey;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentPayments — Rotate API key</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .box { background: #fff; border: 1px solid #e8e8e8; border-radius: 12px; padding: 40px; width: 100%; max-width: 440px; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    p { font-size: 14px; color: #444; margin-bottom: 16px; line-height: 1.6; }
+    .warning { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 6px; padding: 12px 14px; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+    .current-key { display: block; font-family: monospace; font-size: 12px; background: #f5f5f5; border-radius: 6px; padding: 10px 12px; word-break: break-all; margin-bottom: 24px; color: #555; }
+    .actions { display: flex; gap: 10px; }
+    button { flex: 1; padding: 11px; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .confirm { background: #b91c1c; color: #fff; }
+    .confirm:hover { background: #991b1b; }
+    .cancel { background: #f0f0f0; color: #333; text-decoration: none; text-align: center; display: flex; align-items: center; justify-content: center; }
+    .cancel:hover { background: #e5e5e5; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Rotate API key</h1>
+    <p>This generates a new platform API key and immediately deactivates the current one.</p>
+    <div class="warning">Any SDK deployment still configured with the current key will start getting <code>401 Unauthorized</code> until you update it with the new key.</div>
+    <span class="current-key">${escapeHtml(maskApiKey(currentKey))}</span>
+    <div class="actions">
+      <a class="cancel" href="/dashboard">Cancel</a>
+      <form method="POST" action="/dashboard/rotate-key" style="flex:1">
+        <button type="submit" class="confirm">Rotate now</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+module.exports = { dashboardHtml, loginHtml, rotateKeyConfirmHtml };

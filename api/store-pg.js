@@ -115,6 +115,18 @@ module.exports = {
   },
 
   // ---------------------------------------------------------------------------
+  // API key rotation
+  // ---------------------------------------------------------------------------
+
+  async setApiKey(vendorId, apiKey) {
+    const { rows } = await pool.query(
+      'UPDATE vendors SET api_key = $2 WHERE vendor_id = $1 RETURNING *',
+      [vendorId, apiKey],
+    );
+    return rows[0] || null;
+  },
+
+  // ---------------------------------------------------------------------------
   // Usage analytics (for dashboard)
   // ---------------------------------------------------------------------------
 

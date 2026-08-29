@@ -1,0 +1,46 @@
+{
+  "name": "@agentpayments/proxy",
+  "version": "0.1.0",
+  "description": "Standalone AgentPayments reverse proxy — gates any backend (any language, any stack) behind Solana USDC payments, no SDK integration required",
+  "license": "MIT",
+  "main": "index.js",
+  "bin": {
+    "agentpayments-proxy": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "agentpayments",
+    "ai-agents",
+    "solana",
+    "usdc",
+    "payments",
+    "reverse-proxy",
+    "nginx",
+    "envoy",
+    "x402"
+  ],
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@agentpayments/node": "^0.1.1",
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adambrzosko/AgentPayments.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

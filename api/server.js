@@ -48,7 +48,7 @@ const express = require('express');
 const store = require('./store');
 const { sendVerificationEmail } = require('./email');
 const { createCustomerAndSubscription, recordKeyIssuance, getCurrentUsage } = require('./stripe-billing');
-const { dashboardHtml, loginHtml } = require('./dashboard');
+const { dashboardHtml, loginHtml, rotateKeyConfirmHtml } = require('./dashboard');
 
 // ---------------------------------------------------------------------------
 // Config
@@ -457,30 +457,64 @@ app.post('/v1/keys/verify', async (req, res, next) => {
 // Dashboard
 // ---------------------------------------------------------------------------
 
+/** Resolves the dashboard session cookie to a vendor record, or null. */
+async function requireDashboardVendor(req, res) {
+  const sessionCookie = getCookie(req, 'agp_dash');
+  const vendorId = parseDashboardSession(sessionCookie);
+  if (!vendorId) return null;
+  const vendor = await store.getVendor(vendorId);
+  if (!vendor) {
+    res.clearCookie('agp_dash');
+    return null;
+  }
+  return vendor;
+}
+
 app.get('/dashboard', async (req, res, next) => {
   try {
     const verified = req.query.verified === '1';
-    const sessionCookie = getCookie(req, 'agp_dash');
-    const vendorId = parseDashboardSession(sessionCookie);
-
-    if (!vendorId) {
-      const msg = verified ? null : null; // login page doesn't need a message
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) {
       return res.send(loginHtml(verified ? 'Email verified! Sign in to view your dashboard.' : null));
     }
 
-    const vendor = await store.getVendor(vendorId);
-    if (!vendor) {
-      res.clearCookie('agp_dash');
-      return res.send(loginHtml('Session expired. Please sign in again.'));
-    }
-
-    const [thisMonth, dailyUsage, stripeUsage] = await Promise.all([
+    const vendorId = vendor.vendor_id || vendor.vendorId;
+    const [thisMonth, dailyUsage] = await Promise.all([
       store.keysIssuedThisMonth(vendorId),
       store.getDailyUsage(vendorId, 30),
-      getCurrentUsage(vendor.stripe_customer_id || vendor.stripeCustomerId),
     ]);
 
-    res.send(dashboardHtml(vendor, thisMonth, dailyUsage, stripeUsage));
+    res.send(dashboardHtml(vendor, thisMonth, dailyUsage, { platformFeeWallet, platformFeeRatePct }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/dashboard/rotate-key', async (req, res, next) => {
+  try {
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) return res.send(loginHtml('Session expired. Please sign in again.'));
+    res.send(rotateKeyConfirmHtml(vendor));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/dashboard/rotate-key', async (req, res, next) => {
+  try {
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) return res.send(loginHtml('Session expired. Please sign in again.'));
+
+    const vendorId = vendor.vendor_id || vendor.vendorId;
+    const newApiKey = makeVendorApiKey(vendorId);
+    const updated = await store.setApiKey(vendorId, newApiKey);
+
+    const [thisMonth, dailyUsage] = await Promise.all([
+      store.keysIssuedThisMonth(vendorId),
+      store.getDailyUsage(vendorId, 30),
+    ]);
+
+    res.send(dashboardHtml(updated, thisMonth, dailyUsage, { platformFeeWallet, platformFeeRatePct, newApiKey }));
   } catch (err) {
     next(err);
   }

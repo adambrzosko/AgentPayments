@@ -1,0 +1,46 @@
+{
+  "name": "@agentpayments/koa",
+  "version": "0.1.0",
+  "description": "AgentPayments gate for Koa — same gate behavior as @agentpayments/node, adapted to Koa's ctx",
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "agentpayments",
+    "ai-agents",
+    "solana",
+    "usdc",
+    "payments",
+    "koa",
+    "x402"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@agentpayments/node": "^0.1.1"
+  },
+  "peerDependencies": {
+    "koa": "^2.0.0 || ^3.0.0"
+  },
+  "devDependencies": {
+    "koa": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adambrzosko/AgentPayments.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
