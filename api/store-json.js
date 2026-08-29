@@ -99,6 +99,18 @@ module.exports = {
     }
   },
 
+  // API key rotation
+  setApiKey(vendorId, apiKey) {
+    const data = read();
+    const vendor = data.vendors[vendorId];
+    if (!vendor) return null;
+    delete data.apiKeys[vendor.apiKey];
+    vendor.apiKey = apiKey;
+    data.apiKeys[apiKey] = vendorId;
+    write(data);
+    return vendor;
+  },
+
   // Usage analytics — JSON store has no daily breakdown; returns empty array
   getDailyUsage(_vendorId, _days = 30) {
     return [];
