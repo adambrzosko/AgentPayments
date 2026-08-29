@@ -89,6 +89,30 @@ export default { fetch: (req, env, ctx) => gate(req, env, ctx) };
 
 Setting `AGENTPAYMENTS_API_KEY` switches agent-key issuance from local (`ag_...`) to platform-issued (`agp_...`), and — when the platform account has an on-chain fee configured — every 402 response's custom `payment` object gains a `platform_fee` field describing a second required USDC transfer, to be sent in the **same Solana transaction** as the vendor payment. Missing that second transfer is treated as an unpaid request, same as any other invalid payment. This is opt-in per vendor account and has no effect on self-hosted deployments (no `AGENTPAYMENTS_API_KEY`). The standards-compliant `accepts[]`/`X-PAYMENT-REQUIRED` x402 fields are untouched — they still describe only the vendor leg.
 
+## Pricing & Access Model
+
+`createEdgeGate` accepts the same three layered options as `@agentpayments/node`, adapted to Edge's stateless-first architecture:
+
+```js
+const gate = createEdgeGate({
+  fetchUpstream: (request, env) => fetch(request),
+  minPayment: 0.01,
+  // Edge has no durable grant store by design, so "access duration" is
+  // implemented as the TTL passed to the payment cache instead of the
+  // standard 10-minute default — null (default) keeps today's behavior.
+  accessDuration: 86400,
+  pricingTiers: [
+    { minAmount: 0.01, durationSeconds: 3600,  name: 'hourly' },
+    { minAmount: 0.05, durationSeconds: null,  name: 'lifetime' },
+  ],
+  routes: [{ pathPrefix: '/premium', minPayment: 0.05 }],
+});
+```
+
+`pricingTiers` and `routes` behave exactly as in `@agentpayments/node` (see its README for details) — the gate resolves the effective price/tier per request and surfaces non-floor tiers as extra `accepts[]` entries in the 402 response. The one real difference is `accessDuration`: since Edge intentionally has no durable per-key grant store, a longer duration just means a longer-lived cache entry (skipping re-verification), not a stronger persistence guarantee than Node's `grantStore`.
+
+**Revocation**: the `Store` interface (`InMemoryStore`, `CloudflareKVStore`) gained an `invalidatePayment(agentKey)` method — call it from your own admin route to clear a cached positive result early, forcing the next request to re-scan the chain instead of trusting a stale cache hit.
+
 ## Security Features
 
 - **Timing-safe HMAC comparison** — custom HMAC-then-XOR using Web Crypto API (`crypto.subtle`)

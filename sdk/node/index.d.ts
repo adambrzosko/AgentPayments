@@ -1,8 +1,33 @@
 import type { RequestHandler } from 'express';
 
+export interface Grant {
+  /** Epoch ms after which the grant no longer authorizes access. null = never expires. */
+  expiresAt?: number | null;
+  /** Name of the pricingTiers entry this grant was issued under, if any. */
+  tier?: string | null;
+}
+
 export interface GrantStore {
   has(key: string): boolean | Promise<boolean>;
-  add(key: string): void | Promise<void>;
+  add(key: string, grant?: Grant): void | Promise<void>;
+  revoke(key: string): void | Promise<void>;
+}
+
+export interface PricingTier {
+  /** Minimum on-chain payment (USDC) required to qualify for this tier. */
+  minAmount: number;
+  /** Seconds the grant lasts once this tier is reached. null = unlimited. */
+  durationSeconds?: number | null;
+  /** Tier name, surfaced in the x402 402 response and the grant record. */
+  name?: string;
+}
+
+export interface RouteConfig {
+  /** Path prefix this override applies to (matched on a path-segment boundary). */
+  pathPrefix: string;
+  minPayment?: number;
+  accessDuration?: number | null;
+  pricingTiers?: PricingTier[] | null;
 }
 
 export interface RateLimiter {
@@ -25,6 +50,12 @@ export interface AgentPaymentsGateConfig {
   usdcMint?: string;
   /** Minimum payment amount required, in USDC. */
   minPayment?: number;
+  /** Seconds a successful payment grants access for. null (default) = forever. Ignored when pricingTiers is set. */
+  accessDuration?: number | null;
+  /** Payment-amount -> access mapping. Overrides minPayment/accessDuration when set. */
+  pricingTiers?: PricingTier[] | null;
+  /** Per-route price/duration/tier overrides for a single gate instance, matched by longest pathPrefix. */
+  routes?: RouteConfig[] | null;
   /** Proof-of-work difficulty for the browser challenge page. */
   powDifficulty?: number;
   /** Enable debug mode (devnet). Defaults to process.env.DEBUG !== 'false'. */

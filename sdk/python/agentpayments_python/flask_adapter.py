@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from flask import jsonify, make_response, redirect, request, Response as FlaskResponse
 import json as _flask_json
+import time as _time
 
 from .challenge import POW_DIFFICULTY, challenge_html, make_nonce, validate_challenge_submission
 from .cookies import COOKIE_MAX_AGE, COOKIE_NAME, is_valid_cookie_value, make_cookie
@@ -7,9 +10,10 @@ from .crypto import generate_agent_key, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter, _agent_key_limiter, _challenge_issue_limiter
 from .crawler import is_verified_crawler
-from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, verify_payment_on_chain
-from .x402 import build_payment_object, build_payment_requirements, enrich_402_body, payment_required_header
+from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, _scan_for_payment
+from .x402 import build_payment_object, build_payment_requirements, enrich_402_body, payment_required_header, tier_x402_opts_list
 from .platform_client import HOSTED_KEY_PREFIX, PlatformClient, is_valid_hosted_key
+from .pricing import normalize_price_config, build_routes_table, resolve_route_config, resolve_tier
 
 import json as _json
 from pathlib import Path as _Path
@@ -20,10 +24,11 @@ MAX_FP_LENGTH = _constants["MAX_FP_LENGTH"]
 MAX_POW_LENGTH = _constants["MAX_POW_LENGTH"]
 
 
-def _payment_required_flask(body: dict, *, wallet_address: str, mint: str, min_payment: float, debug: bool, agent_key: str = "", resource: str = ""):
+def _payment_required_flask(body: dict, *, wallet_address: str, mint: str, min_payment: float, debug: bool, agent_key: str = "", resource: str = "", extra_tier_opts: list[dict] | None = None):
     """Return a Flask 402 response enriched with x402-standard fields and header."""
     pay_req = build_payment_requirements(wallet_address=wallet_address, mint=mint, min_payment=min_payment, debug=debug, agent_key=agent_key, resource=resource)
-    enriched = enrich_402_body(body, pay_req)
+    extra_reqs = [build_payment_requirements(**opts) for opts in (extra_tier_opts or [])]
+    enriched = enrich_402_body(body, pay_req, extra_reqs)
     resp = make_response(_flask_json.dumps(enriched, indent=2), 402)
     resp.headers["Content-Type"] = "application/json"
     resp.headers["X-PAYMENT-REQUIRED"] = payment_required_header(pay_req)
@@ -34,7 +39,7 @@ def _client_ip() -> str:
     return request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "unknown"
 
 
-def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None):
+def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", min_payment: float = MIN_PAYMENT, access_duration: float | None = None, pricing_tiers: list[dict] | None = None, routes: list[dict] | None = None, pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None):
     if challenge_secret == "default-secret-change-me":
         import logging
         logger = logging.getLogger("agentpayments")
@@ -49,10 +54,14 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
     mint = usdc_mint or (USDC_MINT_DEVNET if debug else USDC_MINT_MAINNET)
     _require_https = (not debug) if require_https is None else require_https
     _platform_client = PlatformClient(api_key, platform_url) if api_key else None
+    # Price/duration/tier resolution is static for this app — precompute once.
+    base_price_config = normalize_price_config(min_payment, access_duration, pricing_tiers)
+    routes_table = build_routes_table(routes, min_payment, access_duration, pricing_tiers)
 
     @app.before_request
     def _gate():
         path = request.path
+        price_config = resolve_route_config(path, routes_table, base_price_config)
         if is_public_path(path):
             return None
         if path == "/__challenge/verify" and request.method == "POST":
@@ -94,21 +103,22 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
                     new_key = generate_agent_key(challenge_secret)
                 if fee_info:
                     no_key_instructions = (
-                        f'Send {MIN_PAYMENT} USDC on Solana {network} to {home_wallet_address} with memo "{new_key}", '
+                        f'Send {price_config["min_payment"]} USDC on Solana {network} to {home_wallet_address} with memo "{new_key}", '
                         f'AND in the SAME transaction send the platform fee (see platform_fee below) to {fee_info["wallet"]}. '
                         f'Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
                     )
                 else:
-                    no_key_instructions = f'Send {MIN_PAYMENT} USDC on Solana {network} to {home_wallet_address} with memo "{new_key}". Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
+                    no_key_instructions = f'Send {price_config["min_payment"]} USDC on Solana {network} to {home_wallet_address} with memo "{new_key}". Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
                 return _payment_required_flask(
                     {
                         "error": "payment_required",
                         "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.",
                         "your_key": new_key,
-                        "payment": build_payment_object(network=network, min_payment=MIN_PAYMENT, wallet_address=home_wallet_address, memo=new_key, fee_info=fee_info, instructions=no_key_instructions),
+                        "payment": build_payment_object(network=network, min_payment=price_config["min_payment"], wallet_address=home_wallet_address, memo=new_key, fee_info=fee_info, instructions=no_key_instructions),
                     },
-                    wallet_address=home_wallet_address, mint=mint, min_payment=MIN_PAYMENT,
+                    wallet_address=home_wallet_address, mint=mint, min_payment=price_config["min_payment"],
                     debug=debug, agent_key=new_key, resource=path,
+                    extra_tier_opts=tier_x402_opts_list(price_config["pricing_tiers"], {"wallet_address": home_wallet_address, "mint": mint, "debug": debug, "agent_key": new_key, "resource": path}),
                 )
             if key.startswith(HOSTED_KEY_PREFIX):
                 if not _platform_client:
@@ -129,19 +139,24 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
                 return jsonify({"error": "server_error", "message": "Payment verification unavailable."}), 500
             if grant_store and grant_store.has(key):
                 return None
-            paid = verify_payment_on_chain(key, home_wallet_address, rpc_url, mint, fee_info=fee_info)
+            scan_result = _scan_for_payment(key, home_wallet_address, rpc_url, mint, min_payment=price_config["min_payment"], fee_info=fee_info)
+            paid = scan_result["paid"]
             if paid and grant_store:
-                grant_store.add(key)
+                tier = resolve_tier(scan_result["amount_paid"], price_config["pricing_tiers"])
+                duration_seconds = tier["duration_seconds"] if tier else price_config["access_duration"]
+                expires_at = (_time.time() + duration_seconds) if duration_seconds else None
+                grant_store.add(key, expires_at=expires_at, tier=(tier["name"] if tier else None))
             if not paid:
                 return _payment_required_flask(
                     {
                         "error": "payment_required",
                         "message": "Key is valid but payment has not been verified on-chain yet.",
                         "your_key": key,
-                        "payment": build_payment_object(network=network, min_payment=MIN_PAYMENT, wallet_address=home_wallet_address, memo=key, fee_info=fee_info),
+                        "payment": build_payment_object(network=network, min_payment=price_config["min_payment"], wallet_address=home_wallet_address, memo=key, fee_info=fee_info),
                     },
-                    wallet_address=home_wallet_address, mint=mint, min_payment=MIN_PAYMENT,
+                    wallet_address=home_wallet_address, mint=mint, min_payment=price_config["min_payment"],
                     debug=debug, agent_key=key, resource=path,
+                    extra_tier_opts=tier_x402_opts_list(price_config["pricing_tiers"], {"wallet_address": home_wallet_address, "mint": mint, "debug": debug, "agent_key": key, "resource": path}),
                 )
             return None
 

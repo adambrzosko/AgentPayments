@@ -90,4 +90,13 @@ export class CloudflareKVStore {
       expirationTtl: Math.max(1, Math.ceil(ttlMs / 1000)),
     });
   }
+
+  /**
+   * Revocation: clears the cached payment result so the next request re-scans
+   * the chain instead of trusting a stale cache hit. Called by the vendor's
+   * own code (e.g. an admin route), never by the gate itself.
+   */
+  async invalidatePayment(agentKey) {
+    await this._kv.delete(`pay:${agentKey}`);
+  }
 }
