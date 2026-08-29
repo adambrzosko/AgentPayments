@@ -770,13 +770,24 @@ def _rpc_response(result):
     )
 
 
-def _build_tx(memo: str, amount: float, mint: str, destination_owner: str, ok=True, fee_amount: float = None):
-    """Build a minimal mock RPC getTransaction response for a transferChecked.
+def _build_tx(memo: str, amount: float, mint: str, destination_owner: str, ok=True, fee_amount: float = None, pre_vendor_balance: float = 0, pre_fee_balance: float = 0):
+    """Build a minimal mock RPC getTransaction response with a memo instruction
+    plus a balance delta on the vendor's (and optionally fee wallet's) USDC
+    token account — this is what _scan_for_payment actually reads for the
+    paid amount (see balance-delta verification). The transferChecked
+    instructions are still included for realism (a real transaction has both)
+    but are not what the verifier relies on.
 
-    fee_amount, if given, adds a second transferChecked instruction (in the SAME
-    transaction) to a distinct "fee_ata_address" destination — simulating the
+    fee_amount, if given, adds a second balance delta (in the SAME
+    transaction) on a distinct "fee_ata_address" account — simulating the
     on-chain platform fee leg.
     """
+    account_keys = [{"pubkey": "payer_address"}, {"pubkey": "agent_ata_address"}, {"pubkey": "dest_ata_address"}]
+    pre_token_balances = []
+    post_token_balances = [{"accountIndex": 2, "mint": mint, "uiTokenAmount": {"amount": str(round((pre_vendor_balance + amount) * 1_000_000))}}]
+    if pre_vendor_balance > 0:
+        pre_token_balances.append({"accountIndex": 2, "mint": mint, "uiTokenAmount": {"amount": str(round(pre_vendor_balance * 1_000_000))}})
+
     instructions = [
         {
             "program": "spl-token",
@@ -793,6 +804,10 @@ def _build_tx(memo: str, amount: float, mint: str, destination_owner: str, ok=Tr
         },
     ]
     if fee_amount is not None:
+        account_keys.append({"pubkey": "fee_ata_address"})
+        post_token_balances.append({"accountIndex": 3, "mint": mint, "uiTokenAmount": {"amount": str(round((pre_fee_balance + fee_amount) * 1_000_000))}})
+        if pre_fee_balance > 0:
+            pre_token_balances.append({"accountIndex": 3, "mint": mint, "uiTokenAmount": {"amount": str(round(pre_fee_balance * 1_000_000))}})
         instructions.append({
             "program": "spl-token",
             "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -816,11 +831,13 @@ def _build_tx(memo: str, amount: float, mint: str, destination_owner: str, ok=Tr
             "err": None if ok else {"InstructionError": [0, "Custom"]},
             "innerInstructions": [],
             "logMessages": [],
+            "preTokenBalances": pre_token_balances,
+            "postTokenBalances": post_token_balances,
         },
         "transaction": {
             "message": {
                 "instructions": instructions,
-                "accountKeys": [],
+                "accountKeys": account_keys,
             }
         },
     }
@@ -1010,6 +1027,107 @@ class TestVerifyPaymentOnChain:
         with patch("requests.post", side_effect=Exception("should not be called")):
             result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
         assert result is False
+
+    # ─── balance-delta verification (replaces instruction parsing) ─────────
+
+    def test_payment_recognized_when_vendor_ata_created_in_same_tx(self):
+        # _build_tx's default pre_vendor_balance is 0, which already produces
+        # an empty preTokenBalances entry (matching a freshly-created ATA) —
+        # exercised implicitly by every other test in this class, asserted
+        # explicitly here as documented, intentional coverage.
+        from agentpayments_python.solana import verify_payment_on_chain
+        key = self._fresh_key()
+        tx = _build_tx(key, 0.01, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_new_ata", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
+        assert result is True
+
+    def test_payment_recognized_against_preexisting_nonzero_balance(self):
+        from agentpayments_python.solana import verify_payment_on_chain
+        key = self._fresh_key()
+        tx = _build_tx(key, 0.01, self.MINT, self.WALLET, pre_vendor_balance=5)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_existing_balance", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
+        assert result is True
+
+    def test_payment_recognized_from_balance_delta_alone_no_transfer_instruction(self):
+        # Proves the amount no longer comes from parsing a spl-token
+        # instruction — only meta.postTokenBalances is used. This is what
+        # makes the check robust to CPI-nested transfers, Token-2022, or any
+        # other program that moves tokens without necessarily looking like a
+        # top-level `transfer`/`transferChecked` instruction to the RPC parser.
+        from agentpayments_python.solana import verify_payment_on_chain
+        key = self._fresh_key()
+        tx = {
+            "meta": {
+                "err": None,
+                "innerInstructions": [],
+                "preTokenBalances": [],
+                "postTokenBalances": [{"accountIndex": 1, "mint": self.MINT, "uiTokenAmount": {"amount": str(round(0.01 * 1_000_000))}}],
+            },
+            "transaction": {"message": {
+                "instructions": [{"program": "spl-memo", "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "parsed": key}],
+                "accountKeys": [{"pubkey": "payer_address"}, {"pubkey": "dest_ata_address"}],
+            }},
+        }
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_no_ix", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
+        assert result is True
+
+    def test_net_negative_balance_change_not_treated_as_payment(self):
+        from agentpayments_python.solana import verify_payment_on_chain
+        key = self._fresh_key()
+        tx = {
+            "meta": {
+                "err": None,
+                "innerInstructions": [],
+                "preTokenBalances": [{"accountIndex": 1, "mint": self.MINT, "uiTokenAmount": {"amount": str(round(10 * 1_000_000))}}],
+                "postTokenBalances": [{"accountIndex": 1, "mint": self.MINT, "uiTokenAmount": {"amount": str(round(9 * 1_000_000))}}],
+            },
+            "transaction": {"message": {
+                "instructions": [{"program": "spl-memo", "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "parsed": key}],
+                "accountKeys": [{"pubkey": "payer_address"}, {"pubkey": "dest_ata_address"}],
+            }},
+        }
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_negative_delta", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
+        assert result is False
+
+    def test_deltas_across_multiple_vendor_atas_sum_to_satisfy_threshold(self):
+        from agentpayments_python.solana import verify_payment_on_chain, MIN_PAYMENT
+        key = self._fresh_key()
+        half = MIN_PAYMENT / 2
+        tx = {
+            "meta": {
+                "err": None,
+                "innerInstructions": [],
+                "preTokenBalances": [],
+                "postTokenBalances": [
+                    {"accountIndex": 1, "mint": self.MINT, "uiTokenAmount": {"amount": str(round(half * 1_000_000))}},
+                    {"accountIndex": 2, "mint": self.MINT, "uiTokenAmount": {"amount": str(round(half * 1_000_000))}},
+                ],
+            },
+            "transaction": {"message": {
+                "instructions": [{"program": "spl-memo", "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "parsed": key}],
+                "accountKeys": [{"pubkey": "payer_address"}, {"pubkey": "dest_ata_one"}, {"pubkey": "dest_ata_two"}],
+            }},
+        }
+        ata = {"value": [
+            {"pubkey": "dest_ata_one", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}},
+            {"pubkey": "dest_ata_two", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}},
+        ]}
+        sigs = [{"signature": "sig_multi_ata", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
+        assert result is True
 
 
 class TestVerifyPaymentOnChainFee:

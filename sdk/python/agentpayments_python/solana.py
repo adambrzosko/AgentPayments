@@ -192,11 +192,9 @@ def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: s
             for group in inner_instructions:
                 all_ix.extend(group.get("instructions", []))
 
+            # Memo check stays instruction-based — memo instructions have no
+            # balance signature to diff.
             has_memo = False
-            has_payment = False
-            has_fee_payment = fee_info is None  # vacuously satisfied when no fee is required
-            matched_amount_micro = None
-
             for ix in all_ix:
                 program = ix.get("program", "")
                 program_id = ix.get("programId", "")
@@ -205,39 +203,63 @@ def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: s
                     memo_text = parsed if isinstance(parsed, str) else str(parsed)
                     if agent_key in memo_text:
                         has_memo = True
+                        break
+            if not has_memo:
+                continue
 
-                if program == "spl-token":
-                    parsed = ix.get("parsed", {})
-                    tx_type = parsed.get("type", "")
-                    if tx_type in ("transfer", "transferChecked"):
-                        info = parsed.get("info", {})
-                        destination = info.get("destination")
-                        # Payment must be delivered to one of the vendor's or fee
-                        # wallet's USDC token accounts — anything else is irrelevant.
-                        is_vendor_dest = destination in vendor_usdc_accounts
-                        is_fee_dest = fee_usdc_accounts is not None and destination in fee_usdc_accounts
-                        if not is_vendor_dest and not is_fee_dest:
-                            continue
-                        if tx_type == "transferChecked" and info.get("mint") != usdc_mint:
-                            continue
-                        # Integer base-unit comparison — avoids float precision issues at
-                        # the payment threshold. tokenAmount.amount and amount are both
-                        # integer strings in micro-USDC (base units).
-                        token_amount = info.get("tokenAmount") or {}
-                        amount_str = token_amount.get("amount") or info.get("amount", "0")
-                        try:
-                            amount_micro = int(amount_str)
-                        except (ValueError, TypeError):
-                            amount_micro = 0
-                        if is_vendor_dest and amount_micro >= min_payment_micro:
-                            has_payment = True
-                            matched_amount_micro = amount_micro
-                        elif is_fee_dest and amount_micro >= fee_amount_micro:
-                            has_fee_payment = True
+            # Payment amount comes from the actual balance change on the
+            # vendor's (and fee wallet's) USDC token account(s), not from
+            # parsing a specific transfer instruction. This is robust to
+            # CPI-nested transfers, Token-2022 (or any other token program)
+            # transfers, and fee-on-transfer extensions — it measures what the
+            # vendor's account actually received, regardless of which program
+            # or instruction path moved the tokens. accountIndex resolves
+            # against accountKeys + address-lookup-table accounts (appended
+            # after static keys) for versioned transactions.
+            account_keys_raw = tx.get("transaction", {}).get("message", {}).get("accountKeys", [])
+            static_keys = [k.get("pubkey") if isinstance(k, dict) else k for k in account_keys_raw]
+            loaded = tx.get("meta", {}).get("loadedAddresses", {}) or {}
+            all_keys = static_keys + list(loaded.get("writable", [])) + list(loaded.get("readonly", []))
 
-            if has_memo and has_payment and has_fee_payment:
+            # Index by accountIndex, not list position — an account created in
+            # this same transaction (e.g. via an idempotent ATA-creation
+            # instruction) has no preTokenBalances entry at all; treat that as 0.
+            pre_by_index = {b["accountIndex"]: b for b in tx.get("meta", {}).get("preTokenBalances", []) or []}
+            post_balances = tx.get("meta", {}).get("postTokenBalances", []) or []
+
+            vendor_delta_micro = 0
+            fee_delta_micro = 0
+            for post in post_balances:
+                if post.get("mint") != usdc_mint:
+                    continue
+                account_index = post.get("accountIndex")
+                pubkey = all_keys[account_index] if account_index is not None and account_index < len(all_keys) else None
+                is_vendor_dest = pubkey in vendor_usdc_accounts
+                is_fee_dest = fee_usdc_accounts is not None and pubkey in fee_usdc_accounts
+                if not is_vendor_dest and not is_fee_dest:
+                    continue
+
+                pre = pre_by_index.get(account_index)
+                try:
+                    pre_micro = int(pre["uiTokenAmount"]["amount"]) if pre else 0
+                    post_micro = int(post["uiTokenAmount"]["amount"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                delta = post_micro - pre_micro
+                if delta <= 0:
+                    continue  # only inflows count — an outflow must never offset toward the threshold
+
+                if is_vendor_dest:
+                    vendor_delta_micro += delta
+                else:
+                    fee_delta_micro += delta
+
+            has_payment = vendor_delta_micro >= min_payment_micro
+            has_fee_payment = fee_info is None or fee_delta_micro >= fee_amount_micro
+
+            if has_payment and has_fee_payment:
                 cache.set(agent_key, True, PAYMENT_CACHE_TTL)
-                return {"paid": True, "amount_paid": matched_amount_micro / 1_000_000}
+                return {"paid": True, "amount_paid": vendor_delta_micro / 1_000_000}
     except Exception:
         logger.exception("[gate] Solana RPC error")
 

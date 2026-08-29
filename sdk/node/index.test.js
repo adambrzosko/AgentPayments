@@ -505,12 +505,21 @@ describe('Pricing & access model', () => {
     return { value: [{ pubkey, account: { data: { parsed: { info: { mint: MINT } } } } }] };
   }
   function buildTx(memo, amount) {
+    const accountKeys = [{ pubkey: 'payer_address' }, { pubkey: 'agent_ata_address' }, { pubkey: 'dest_ata_address' }];
     return {
-      meta: { err: null, innerInstructions: [] },
-      transaction: { message: { instructions: [
-        { program: 'spl-token', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', parsed: { type: 'transferChecked', info: { mint: MINT, tokenAmount: { amount: String(Math.round(amount * 1e6)) }, destination: 'dest_ata_address' } } },
-        { program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: memo },
-      ] } },
+      meta: {
+        err: null,
+        innerInstructions: [],
+        preTokenBalances: [],
+        postTokenBalances: [{ accountIndex: 2, mint: MINT, uiTokenAmount: { amount: String(Math.round(amount * 1e6)) } }],
+      },
+      transaction: { message: {
+        instructions: [
+          { program: 'spl-token', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', parsed: { type: 'transferChecked', info: { mint: MINT, tokenAmount: { amount: String(Math.round(amount * 1e6)) }, destination: 'dest_ata_address' } } },
+          { program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: memo },
+        ],
+        accountKeys,
+      } },
     };
   }
   const realFetch = global.fetch;
@@ -693,21 +702,29 @@ describe('verifyPaymentOnChain', () => {
     return { value: [{ pubkey, account: { data: { parsed: { info: { mint: MINT } } } } }] };
   }
 
-  function buildTx(memo, amount, { feeAmount } = {}) {
+  function buildTx(memo, amount, { feeAmount, preVendorBalance = 0, preFeeBalance = 0 } = {}) {
+    const accountKeys = [
+      { pubkey: 'payer_address' }, { pubkey: 'agent_ata_address' }, { pubkey: 'dest_ata_address' },
+      ...(feeAmount !== undefined ? [{ pubkey: 'fee_ata_address' }] : []),
+    ];
     const instructions = [{
       program: 'spl-token',
       programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
       parsed: { type: 'transferChecked', info: { mint: MINT, tokenAmount: { amount: String(Math.round(amount * 1e6)) }, destination: 'dest_ata_address' } },
     }];
+    const preTokenBalances = preVendorBalance > 0 ? [{ accountIndex: 2, mint: MINT, uiTokenAmount: { amount: String(Math.round(preVendorBalance * 1e6)) } }] : [];
+    const postTokenBalances = [{ accountIndex: 2, mint: MINT, uiTokenAmount: { amount: String(Math.round((preVendorBalance + amount) * 1e6)) } }];
     if (feeAmount !== undefined) {
       instructions.push({
         program: 'spl-token',
         programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
         parsed: { type: 'transferChecked', info: { mint: MINT, tokenAmount: { amount: String(Math.round(feeAmount * 1e6)) }, destination: 'fee_ata_address' } },
       });
+      if (preFeeBalance > 0) preTokenBalances.push({ accountIndex: 3, mint: MINT, uiTokenAmount: { amount: String(Math.round(preFeeBalance * 1e6)) } });
+      postTokenBalances.push({ accountIndex: 3, mint: MINT, uiTokenAmount: { amount: String(Math.round((preFeeBalance + feeAmount) * 1e6)) } });
     }
     instructions.push({ program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: memo });
-    return { meta: { err: null, innerInstructions: [] }, transaction: { message: { instructions } } };
+    return { meta: { err: null, innerInstructions: [], preTokenBalances, postTokenBalances }, transaction: { message: { instructions, accountKeys } } };
   }
 
   // Dispatches RPC calls by method (and, for getTokenAccountsByOwner, by which
@@ -777,5 +794,101 @@ describe('verifyPaymentOnChain', () => {
     });
     const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, FEE_INFO);
     assert.equal(result, false);
+  });
+
+  // ─── balance-delta verification (replaces instruction parsing) ───────────
+
+  test('payment recognized when the vendor ATA is created in the same transaction (no preTokenBalances entry)', async () => {
+    const key = 'agp_test_key_new_ata';
+    // buildTx's default preVendorBalance is 0, which already produces an
+    // empty preTokenBalances array (matching a freshly-created ATA) — this
+    // is the common case exercised by every other test in this block, but
+    // asserted explicitly here as documented, intentional coverage.
+    mockRpc({ sigs: [{ signature: 'sig_new_ata', err: null }], ata: ata('dest_ata_address'), tx: buildTx(key, MIN_PAYMENT) });
+    const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, null);
+    assert.equal(result, true);
+  });
+
+  test('payment recognized against a pre-existing non-zero vendor balance', async () => {
+    const key = 'agp_test_key_existing_balance';
+    mockRpc({
+      sigs: [{ signature: 'sig_existing_balance', err: null }],
+      ata: ata('dest_ata_address'),
+      tx: buildTx(key, MIN_PAYMENT, { preVendorBalance: 5 }),
+    });
+    const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, null);
+    assert.equal(result, true);
+  });
+
+  test('payment recognized from balance delta alone, with no matching transfer instruction', async () => {
+    // Proves the amount no longer comes from parsing a spl-token instruction —
+    // only meta.postTokenBalances is used. This is what makes the check
+    // robust to CPI-nested transfers, Token-2022, or any other program that
+    // moves tokens without necessarily looking like a top-level `transfer`/
+    // `transferChecked` instruction to the RPC's parser.
+    const key = 'agp_test_key_no_ix';
+    const tx = {
+      meta: {
+        err: null,
+        innerInstructions: [],
+        preTokenBalances: [],
+        postTokenBalances: [{ accountIndex: 1, mint: MINT, uiTokenAmount: { amount: String(Math.round(MIN_PAYMENT * 1e6)) } }],
+      },
+      transaction: { message: {
+        instructions: [{ program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: key }],
+        accountKeys: [{ pubkey: 'payer_address' }, { pubkey: 'dest_ata_address' }],
+      } },
+    };
+    mockRpc({ sigs: [{ signature: 'sig_no_ix', err: null }], ata: ata('dest_ata_address'), tx });
+    const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, null);
+    assert.equal(result, true);
+  });
+
+  test('a net-negative balance change on the vendor account is not treated as payment', async () => {
+    const key = 'agp_test_key_negative_delta';
+    const tx = {
+      meta: {
+        err: null,
+        innerInstructions: [],
+        preTokenBalances: [{ accountIndex: 1, mint: MINT, uiTokenAmount: { amount: String(Math.round(10 * 1e6)) } }],
+        postTokenBalances: [{ accountIndex: 1, mint: MINT, uiTokenAmount: { amount: String(Math.round(9 * 1e6)) } }], // vendor balance went DOWN
+      },
+      transaction: { message: {
+        instructions: [{ program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: key }],
+        accountKeys: [{ pubkey: 'payer_address' }, { pubkey: 'dest_ata_address' }],
+      } },
+    };
+    mockRpc({ sigs: [{ signature: 'sig_negative_delta', err: null }], ata: ata('dest_ata_address'), tx });
+    const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, null);
+    assert.equal(result, false);
+  });
+
+  test('deltas across multiple vendor ATAs sum to satisfy the threshold', async () => {
+    const key = 'agp_test_key_multi_ata';
+    const half = MIN_PAYMENT / 2;
+    const tx = {
+      meta: {
+        err: null,
+        innerInstructions: [],
+        preTokenBalances: [],
+        postTokenBalances: [
+          { accountIndex: 1, mint: MINT, uiTokenAmount: { amount: String(Math.round(half * 1e6)) } },
+          { accountIndex: 2, mint: MINT, uiTokenAmount: { amount: String(Math.round(half * 1e6)) } },
+        ],
+      },
+      transaction: { message: {
+        instructions: [{ program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: key }],
+        accountKeys: [{ pubkey: 'payer_address' }, { pubkey: 'dest_ata_one' }, { pubkey: 'dest_ata_two' }],
+      } },
+    };
+    // Vendor owns two USDC token accounts; each individually falls short of
+    // MIN_PAYMENT but together they clear it.
+    mockRpc({
+      sigs: [{ signature: 'sig_multi_ata', err: null }],
+      ata: { value: [{ pubkey: 'dest_ata_one', account: { data: { parsed: { info: { mint: MINT } } } } }, { pubkey: 'dest_ata_two', account: { data: { parsed: { info: { mint: MINT } } } } }] },
+      tx,
+    });
+    const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, null);
+    assert.equal(result, true);
   });
 });

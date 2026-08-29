@@ -1,0 +1,29 @@
+name: E2E (live demo)
+
+# Exercises the real, live, gate-enforced paywall at demo.agentpayments.cloud
+# (browser flow, agent 402 flow, paid-key flow, public paths). Deliberately
+# NOT triggered on push/pull_request: the paid-key flow spends real devnet
+# USDC and takes ~20-30s, and running it on every commit would add cost and
+# latency to routine PRs for no benefit. Scheduled nightly, plus manual
+# workflow_dispatch for on-demand runs. Needs no secrets — scripts/e2e-demo.js
+# only acts as an external HTTP client against the already-deployed demo; the
+# demo server holds its own DEMO_AGENT_SECRET.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  e2e-demo:
+    name: E2E — demo.agentpayments.cloud
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run E2E check
+        run: node scripts/e2e-demo.js
