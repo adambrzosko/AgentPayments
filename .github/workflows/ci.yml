@@ -20,6 +20,9 @@ jobs:
       - name: Load SDK
         run: node -e "require('./sdk/node/index.js'); console.log('Node SDK OK')"
 
+      - name: Run test suite
+        run: node --test sdk/node/index.test.js
+
       - name: Syntax check — node_implementation
         run: node --check node_implementation/server.js
 
@@ -40,6 +43,10 @@ jobs:
       - name: Parse Edge SDK as ESM module
         run: node --input-type=module < sdk/edge/index.js && echo "Edge SDK OK"
 
+      - name: Run test suite
+        working-directory: sdk/edge
+        run: npm test
+
       - name: Parse Cloudflare Worker
         run: node --check edge_implementation/cloudflare_worker/src/worker.js
 
@@ -55,7 +62,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install SDK and dependencies
-        run: pip install -e "sdk/python[django,fastapi,flask]"
+        run: pip install -e "sdk/python[django,fastapi,flask]" pytest
+
+      - name: Run test suite
+        working-directory: sdk/python
+        run: python3 -m pytest tests/ -q
 
       - name: Syntax check — all SDK files
         run: |
