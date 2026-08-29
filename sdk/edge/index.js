@@ -41,6 +41,10 @@ const HOSTED_KEY_PREFIX = 'agp_';
 //   checkRateLimit(key: string, windowMs: number, max: number): Promise<boolean>
 //   getCachedPayment(agentKey: string): Promise<boolean | undefined>
 //   setCachedPayment(agentKey: string, value: boolean, ttlMs: number): Promise<void>
+//   invalidatePayment(agentKey: string): Promise<void>             // NEW: revocation —
+//     // clears the cache entry so the next request re-scans the chain instead of
+//     // trusting a stale cache hit. Called by the vendor's own code (e.g. an
+//     // admin route), never by the gate itself.
 // }
 // ---------------------------------------------------------------------------
 
@@ -81,6 +85,10 @@ export class InMemoryStore {
   async setCachedPayment(agentKey, value, ttlMs) {
     if (this._payments.size >= PAYMENT_CACHE_MAX) this._payments.delete(this._payments.keys().next().value);
     this._payments.set(agentKey, { value, ts: Date.now(), ttl: ttlMs });
+  }
+
+  async invalidatePayment(agentKey) {
+    this._payments.delete(agentKey);
   }
 }
 
@@ -360,7 +368,14 @@ async function rpcCallWithFallback(rpcUrls, method, params, opts) {
  * payment must also carry a USDC transfer to feeInfo.wallet of at least
  * minPayment * ratePct / 100, or the payment is treated as unverified.
  */
-export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usdcMint, minPayment = MIN_PAYMENT, feeInfo = null) {
+/**
+ * Scans the chain for a matching payment, same as verifyPaymentOnChain, but
+ * also returns the actual amount paid (decimal USDC) so callers can resolve
+ * pricing tiers. Not exported — verifyPaymentOnChain below is the stable
+ * public boolean-returning API; the gate uses this directly when it needs
+ * the amount.
+ */
+async function _scanForPayment(agentKey, walletAddress, rpcUrls, usdcMint, minPayment = MIN_PAYMENT, feeInfo = null) {
   try {
     // commitment: 'finalized' — confirmed blocks can be rolled back (rare but possible).
     const ataData = await rpcCallWithFallback(rpcUrls, 'getTokenAccountsByOwner', [walletAddress, { mint: usdcMint }, { encoding: 'jsonParsed', commitment: 'finalized' }]);
@@ -369,7 +384,7 @@ export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usd
     // payment. Token accounts are mint-bound, so membership also guarantees the
     // token is USDC for plain `transfer` instructions (which carry no mint field).
     const vendorUsdcAccounts = new Set(tokenAccounts);
-    if (vendorUsdcAccounts.size === 0) return false; // vendor has no USDC account yet — no payment possible
+    if (vendorUsdcAccounts.size === 0) return { paid: false, amountPaid: null }; // vendor has no USDC account yet — no payment possible
 
     let feeUsdcAccounts = null;
     let feeAmountMicro = 0;
@@ -377,7 +392,7 @@ export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usd
       const feeAtaData = await rpcCallWithFallback(rpcUrls, 'getTokenAccountsByOwner', [feeInfo.wallet, { mint: usdcMint }, { encoding: 'jsonParsed', commitment: 'finalized' }]);
       feeUsdcAccounts = new Set((feeAtaData.result?.value || []).map((entry) => entry.pubkey));
       feeAmountMicro = Math.round(Math.round(minPayment * 1e6) * feeInfo.ratePct / 100);
-      if (feeUsdcAccounts.size === 0) return false; // fee wallet has no USDC account — fee can never be satisfied
+      if (feeUsdcAccounts.size === 0) return { paid: false, amountPaid: null }; // fee wallet has no USDC account — fee can never be satisfied
     }
 
     const addressesToScan = [walletAddress, ...tokenAccounts];
@@ -414,6 +429,7 @@ export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usd
       let hasMemo = false;
       let hasPayment = false;
       let hasFeePayment = !feeInfo; // vacuously satisfied when no fee is required
+      let matchedAmountMicro = null;
 
       for (const ix of allInstructions) {
         if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
@@ -436,19 +452,70 @@ export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usd
             const amountMicro = parseInt(amountStr, 10);
             if (Number.isNaN(amountMicro)) continue;
             const minPaymentMicro = Math.round(minPayment * 1e6);
-            if (isVendorDest && amountMicro >= minPaymentMicro) hasPayment = true;
+            if (isVendorDest && amountMicro >= minPaymentMicro) { hasPayment = true; matchedAmountMicro = amountMicro; }
             else if (isFeeDest && amountMicro >= feeAmountMicro) hasFeePayment = true;
           }
         }
       }
 
-      if (hasMemo && hasPayment && hasFeePayment) return true;
+      if (hasMemo && hasPayment && hasFeePayment) return { paid: true, amountPaid: matchedAmountMicro / 1e6 };
     }
   } catch (error) {
     gateLog('error', 'Solana RPC error', { error: error.message });
   }
 
-  return false;
+  return { paid: false, amountPaid: null };
+}
+
+/**
+ * Verify payment on-chain. Returns true/false only — the stable, tested
+ * public API. See _scanForPayment above for the amount-returning variant
+ * used internally for pricing-tier resolution.
+ */
+export async function verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usdcMint, minPayment = MIN_PAYMENT, feeInfo = null) {
+  const result = await _scanForPayment(agentKey, walletAddress, rpcUrls, usdcMint, minPayment, feeInfo);
+  return result.paid;
+}
+
+function sortTiers(tiers) {
+  return [...tiers].sort((a, b) => a.minAmount - b.minAmount);
+}
+
+/** Highest tier whose minAmount the actual paid amount satisfies, or null. */
+function resolveTier(amountPaid, pricingTiers) {
+  if (!pricingTiers || pricingTiers.length === 0 || amountPaid == null) return null;
+  let matched = null;
+  for (const tier of sortTiers(pricingTiers)) {
+    if (amountPaid >= tier.minAmount) matched = tier;
+    else break;
+  }
+  return matched;
+}
+
+/** Collapses a { minPayment, accessDuration, pricingTiers } config into its
+ * effective floor price (lowest tier's minAmount when tiers are set). */
+function normalizePriceConfig({ minPayment, accessDuration, pricingTiers }) {
+  if (pricingTiers && pricingTiers.length > 0) {
+    const sorted = sortTiers(pricingTiers);
+    return { minPayment: sorted[0].minAmount, accessDuration: null, pricingTiers: sorted };
+  }
+  return { minPayment, accessDuration: accessDuration ?? null, pricingTiers: null };
+}
+
+function pathMatchesPrefix(pathname, prefix) {
+  return pathname === prefix || pathname.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
+}
+
+/** Longest-prefix match against `routesTable` (precomputed, normalized route
+ * entries), falling back to `baseConfig` when nothing matches. */
+function resolveRouteConfig(pathname, routesTable, baseConfig) {
+  let best = null;
+  for (const route of routesTable) {
+    if (pathMatchesPrefix(pathname, route.pathPrefix) && (!best || route.pathPrefix.length > best.pathPrefix.length)) {
+      best = route;
+    }
+  }
+  return best || baseConfig;
 }
 
 export function getCookie(request, name) {
@@ -503,7 +570,7 @@ export function jsonResponse(body, status) {
  * Build x402-standard PaymentRequirements for the Solana exact scheme.
  * Spec: https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_svm.md
  */
-function buildX402PaymentRequirements({ walletAddress, mint, minPayment, debug, agentKey, resource }) {
+function buildX402PaymentRequirements({ walletAddress, mint, minPayment, debug, agentKey, resource, tier }) {
   const chainId = debug ? SOLANA_CHAIN_ID_DEVNET : SOLANA_CHAIN_ID_MAINNET;
   const baseUnits = String(Math.round(minPayment * Math.pow(10, USDC_DECIMALS)));
   const req = {
@@ -517,10 +584,26 @@ function buildX402PaymentRequirements({ walletAddress, mint, minPayment, debug, 
       name: 'USDC',
       decimals: USDC_DECIMALS,
       ...(agentKey ? { memo: agentKey } : {}),
+      // Non-standard x402 extension: surfaces pricing-tier duration so an
+      // agent can compare tiers directly from the 402 response.
+      ...(tier ? { tier: tier.name ?? null, durationSeconds: tier.durationSeconds ?? null } : {}),
     },
   };
   if (resource) req.resource = resource;
   return req;
+}
+
+/** Builds one x402 PaymentRequirements entry per non-floor pricing tier, so
+ * the 402 response's accepts[] array lets an agent compare price/duration
+ * tradeoffs upfront. The floor tier is already covered by the primary entry
+ * paymentRequiredResponse builds from the resolved base minPayment. */
+function tierX402OptsList(pricingTiers, baseOpts) {
+  if (!pricingTiers || pricingTiers.length < 2) return [];
+  return sortTiers(pricingTiers).slice(1).map((t) => ({
+    ...baseOpts,
+    minPayment: t.minAmount,
+    tier: { name: t.name ?? null, durationSeconds: t.durationSeconds ?? null },
+  }));
 }
 
 /**
@@ -551,9 +634,10 @@ function buildPaymentField({ network, minPayment, walletAddress, memo, feeInfo, 
  * Like jsonResponse(body, 402) but adds x402Version, accepts[], and
  * the X-PAYMENT-REQUIRED header (base64-encoded PaymentRequirements).
  */
-function paymentRequiredResponse(body, x402Opts) {
+function paymentRequiredResponse(body, x402Opts, extraX402Opts = []) {
   const payReq = buildX402PaymentRequirements(x402Opts);
-  const enriched = { x402Version: X402_VERSION, accepts: [payReq], ...body };
+  const extraReqs = extraX402Opts.map(buildX402PaymentRequirements);
+  const enriched = { x402Version: X402_VERSION, accepts: [payReq, ...extraReqs], ...body };
   const encoded = btoa(JSON.stringify(payReq));
   return new Response(JSON.stringify(enriched, null, 2), {
     status: 402,
@@ -588,6 +672,19 @@ export function createEdgeGate(options = {}) {
       || 'unknown',
     publicPathAllowlist = [],
     minPayment = MIN_PAYMENT,
+    // Seconds a successful payment grants access for. Since Edge has no
+    // durable grant store (stateless-first by design), this is implemented
+    // as the TTL passed to store.setCachedPayment in place of the fixed
+    // 10-minute default — null (default) keeps today's exact behavior.
+    // Ignored when pricingTiers is set (each tier defines its own duration).
+    accessDuration = null,
+    // Payment-amount -> access mapping: [{ minAmount, durationSeconds, name }].
+    // Overrides minPayment/accessDuration when set.
+    pricingTiers = null,
+    // Per-route price/duration/tier overrides for a single gate instance:
+    // [{ pathPrefix, minPayment, accessDuration, pricingTiers }]. Matched by
+    // longest pathPrefix; unmatched requests fall back to the options above.
+    routes = null,
     powDifficulty = POW_DIFFICULTY,
     envResolver,
     // Pluggable state backend. Provide one of:
@@ -611,10 +708,23 @@ export function createEdgeGate(options = {}) {
   // Default in-memory store shared across requests within this isolate.
   const _defaultStore = new InMemoryStore();
 
+  // Price/duration/tier resolution is static per gate instance — precompute
+  // once rather than per-request.
+  const baseConfig = normalizePriceConfig({ minPayment, accessDuration, pricingTiers });
+  const routesTable = (routes || []).map((r) => ({
+    pathPrefix: r.pathPrefix,
+    ...normalizePriceConfig({
+      minPayment: r.minPayment ?? minPayment,
+      accessDuration: r.accessDuration ?? accessDuration,
+      pricingTiers: r.pricingTiers ?? pricingTiers,
+    }),
+  }));
+
   return async function edgeGate(request, env = {}, context = {}) {
     const store = getStore ? getStore({ request, env, context }) : (staticStore || _defaultStore);
     const effectiveEnv = envResolver ? await envResolver({ request, env, context }) : env;
     const url = new URL(request.url);
+    const priceConfig = resolveRouteConfig(url.pathname, routesTable, baseConfig);
     const secret = effectiveEnv.CHALLENGE_SECRET || 'default-secret-change-me';
     const walletAddress = effectiveEnv.HOME_WALLET_ADDRESS || '';
     const debug = effectiveEnv.DEBUG !== 'false';
@@ -736,14 +846,15 @@ export function createEdgeGate(options = {}) {
           newKey = await generateAgentKey(secret);
         }
         const noKeyInstructions = feeInfo
-          ? `Send ${minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}", AND in the SAME transaction send the platform fee (see platform_fee below) to ${feeInfo.wallet}. Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`
-          : `Send ${minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`;
+          ? `Send ${priceConfig.minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}", AND in the SAME transaction send the platform fee (see platform_fee below) to ${feeInfo.wallet}. Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`
+          : `Send ${priceConfig.minPayment} USDC on Solana ${debug ? 'devnet' : 'mainnet'} to ${walletAddress} with memo "${newKey}". Then include the header X-Agent-Key: ${newKey} on all subsequent requests.`;
         return paymentRequiredResponse({
           error: 'payment_required',
           message: 'Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.',
           your_key: newKey,
-          payment: buildPaymentField({ network, minPayment, walletAddress, memo: newKey, feeInfo, instructions: noKeyInstructions }),
-        }, { walletAddress, mint: usdcMint, minPayment, debug, agentKey: newKey, resource: url.pathname });
+          payment: buildPaymentField({ network, minPayment: priceConfig.minPayment, walletAddress, memo: newKey, feeInfo, instructions: noKeyInstructions }),
+        }, { walletAddress, mint: usdcMint, minPayment: priceConfig.minPayment, debug, agentKey: newKey, resource: url.pathname },
+           tierX402OptsList(priceConfig.pricingTiers, { walletAddress, mint: usdcMint, debug, agentKey: newKey, resource: url.pathname }));
       }
 
       // Validate the key. Platform-issued (agp_) verified with verificationSecret;
@@ -789,18 +900,30 @@ export function createEdgeGate(options = {}) {
           error: 'payment_required',
           message: 'Key is valid but payment has not been verified on-chain yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
-          payment: buildPaymentField({ network, minPayment, walletAddress, memo: agentKey, feeInfo }),
-        }, { walletAddress, mint: usdcMint, minPayment, debug, agentKey, resource: url.pathname });
+          payment: buildPaymentField({ network, minPayment: priceConfig.minPayment, walletAddress, memo: agentKey, feeInfo }),
+        }, { walletAddress, mint: usdcMint, minPayment: priceConfig.minPayment, debug, agentKey, resource: url.pathname },
+           tierX402OptsList(priceConfig.pricingTiers, { walletAddress, mint: usdcMint, debug, agentKey, resource: url.pathname }));
       }
-      const paid = await verifyPaymentOnChain(agentKey, walletAddress, rpcUrls, usdcMint, minPayment, feeInfo);
-      await store.setCachedPayment(agentKey, paid, paid ? PAYMENT_CACHE_TTL : NEGATIVE_CACHE_TTL_MS);
+      const { paid, amountPaid } = await _scanForPayment(agentKey, walletAddress, rpcUrls, usdcMint, priceConfig.minPayment, feeInfo);
+      // Successful positive cache TTL doubles as "access duration" here — Edge
+      // has no durable grant store (stateless-first by design), so a longer
+      // TTL than the default 10 minutes is how a longer-than-default paid
+      // access period is expressed. See accessDuration/pricingTiers docs above.
+      let positiveTtlMs = PAYMENT_CACHE_TTL;
+      if (paid) {
+        const tier = resolveTier(amountPaid, priceConfig.pricingTiers);
+        const durationSeconds = tier ? tier.durationSeconds : priceConfig.accessDuration;
+        if (durationSeconds) positiveTtlMs = durationSeconds * 1000;
+      }
+      await store.setCachedPayment(agentKey, paid, paid ? positiveTtlMs : NEGATIVE_CACHE_TTL_MS);
       if (!paid) {
         return paymentRequiredResponse({
           error: 'payment_required',
           message: 'Key is valid but payment has not been verified on-chain yet. Please send the USDC payment and allow a few moments for confirmation.',
           your_key: agentKey,
-          payment: buildPaymentField({ network, minPayment, walletAddress, memo: agentKey, feeInfo }),
-        }, { walletAddress, mint: usdcMint, minPayment, debug, agentKey, resource: url.pathname });
+          payment: buildPaymentField({ network, minPayment: priceConfig.minPayment, walletAddress, memo: agentKey, feeInfo }),
+        }, { walletAddress, mint: usdcMint, minPayment: priceConfig.minPayment, debug, agentKey, resource: url.pathname },
+           tierX402OptsList(priceConfig.pricingTiers, { walletAddress, mint: usdcMint, debug, agentKey, resource: url.pathname }));
       }
 
       const ua = request.headers.get('user-agent') || 'unknown';

@@ -30,6 +30,7 @@ def build_payment_requirements(
     debug: bool,
     agent_key: str = "",
     resource: str = "",
+    tier: dict | None = None,
 ) -> dict:
     """
     Build an x402-standard PaymentRequirements dict for the Solana exact scheme.
@@ -42,6 +43,9 @@ def build_payment_requirements(
         agent_key:      If set, included as extra.memo so x402 clients know
                         which key to reference in their transaction memo.
         resource:       URL path of the gated resource (optional).
+        tier:           Optional {"name": str, "duration_seconds": int|None} —
+                        non-standard x402 extension surfacing pricing-tier
+                        duration so an agent can compare tiers upfront.
 
     Returns:
         PaymentRequirements dict per the x402 SVM exact scheme spec.
@@ -59,11 +63,29 @@ def build_payment_requirements(
             "name": "USDC",
             "decimals": USDC_DECIMALS,
             **({"memo": agent_key} if agent_key else {}),
+            **({"tier": tier.get("name"), "durationSeconds": tier.get("duration_seconds")} if tier else {}),
         },
     }
     if resource:
         req["resource"] = resource
     return req
+
+
+def tier_x402_opts_list(pricing_tiers: list[dict] | None, base_opts: dict) -> list[dict]:
+    """
+    Builds one build_payment_requirements()-kwargs dict per non-floor pricing
+    tier, so the 402 response's accepts[] array lets an agent compare
+    price/duration tradeoffs upfront. The floor tier is already covered by
+    the primary entry built from the resolved base min_payment.
+    """
+    if not pricing_tiers or len(pricing_tiers) < 2:
+        return []
+    from .pricing import sort_tiers
+    sorted_tiers = sort_tiers(pricing_tiers)
+    return [
+        {**base_opts, "min_payment": t["min_amount"], "tier": {"name": t.get("name"), "duration_seconds": t.get("duration_seconds")}}
+        for t in sorted_tiers[1:]
+    ]
 
 
 def build_payment_object(
@@ -116,13 +138,13 @@ def payment_required_header(payment_requirements: dict) -> str:
     return base64.b64encode(_json.dumps(payment_requirements).encode()).decode()
 
 
-def enrich_402_body(body: dict, payment_requirements: dict) -> dict:
+def enrich_402_body(body: dict, payment_requirements: dict, extra_payment_requirements: list[dict] | None = None) -> dict:
     """
     Prepend x402Version and accepts[] to a 402 response body dict,
     keeping all existing fields for backward compatibility.
     """
     return {
         "x402Version": X402_VERSION,
-        "accepts": [payment_requirements],
+        "accepts": [payment_requirements, *(extra_payment_requirements or [])],
         **body,
     }

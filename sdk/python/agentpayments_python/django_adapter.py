@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+import time as _time
 
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
@@ -11,9 +14,10 @@ from .crypto import generate_agent_key, is_valid_agent_key
 from .detection import is_browser_from_headers, is_public_path
 from .ratelimit import _challenge_limiter, _agent_key_limiter, _challenge_issue_limiter
 from .crawler import is_verified_crawler
-from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, verify_payment_on_chain
-from .x402 import build_payment_object, build_payment_requirements, enrich_402_body, payment_required_header
+from .solana import MIN_PAYMENT, RPC_DEVNET, RPC_MAINNET, USDC_MINT_DEVNET, USDC_MINT_MAINNET, is_valid_solana_address, _scan_for_payment
+from .x402 import build_payment_object, build_payment_requirements, enrich_402_body, payment_required_header, tier_x402_opts_list
 from .platform_client import HOSTED_KEY_PREFIX, PlatformClient, is_valid_hosted_key
+from .pricing import normalize_price_config, build_routes_table, resolve_route_config, resolve_tier
 
 import json as _json
 from pathlib import Path as _Path
@@ -26,10 +30,11 @@ MAX_POW_LENGTH = _constants["MAX_POW_LENGTH"]
 logger = logging.getLogger("agentpayments")
 
 
-def _payment_required_response(body: dict, *, wallet_address: str, mint: str, min_payment: float, debug: bool, agent_key: str = "", resource: str = "") -> JsonResponse:
+def _payment_required_response(body: dict, *, wallet_address: str, mint: str, min_payment: float, debug: bool, agent_key: str = "", resource: str = "", extra_tier_opts: list[dict] | None = None) -> JsonResponse:
     """Return a 402 JsonResponse enriched with x402-standard fields and header."""
     pay_req = build_payment_requirements(wallet_address=wallet_address, mint=mint, min_payment=min_payment, debug=debug, agent_key=agent_key, resource=resource)
-    resp = JsonResponse(enrich_402_body(body, pay_req), status=402, json_dumps_params={"indent": 2})
+    extra_reqs = [build_payment_requirements(**opts) for opts in (extra_tier_opts or [])]
+    resp = JsonResponse(enrich_402_body(body, pay_req, extra_reqs), status=402, json_dumps_params={"indent": 2})
     resp["X-PAYMENT-REQUIRED"] = payment_required_header(pay_req)
     return resp
 
@@ -69,6 +74,16 @@ class GateMiddleware:
         self.rpc_url = rpc_url
         self.usdc_mint = usdc_mint
         self.network = "devnet" if debug else "mainnet-beta"
+        # Price/duration/tier resolution is static for this server — precompute
+        # once rather than per-request. Configure via settings.py:
+        #   AGENTPAYMENTS_MIN_PAYMENT, AGENTPAYMENTS_ACCESS_DURATION,
+        #   AGENTPAYMENTS_PRICING_TIERS, AGENTPAYMENTS_ROUTES
+        min_payment = getattr(settings, "AGENTPAYMENTS_MIN_PAYMENT", MIN_PAYMENT)
+        access_duration = getattr(settings, "AGENTPAYMENTS_ACCESS_DURATION", None)
+        pricing_tiers = getattr(settings, "AGENTPAYMENTS_PRICING_TIERS", None)
+        routes = getattr(settings, "AGENTPAYMENTS_ROUTES", None)
+        self.base_price_config = normalize_price_config(min_payment, access_duration, pricing_tiers)
+        self.routes_table = build_routes_table(routes, min_payment, access_duration, pricing_tiers)
         self.pow_difficulty = getattr(settings, "POW_DIFFICULTY", POW_DIFFICULTY)
         self.verify_crawlers = getattr(settings, "AGENTPAYMENTS_VERIFY_CRAWLERS", True)
         # Optional grant store for durable paid-key persistence. Set
@@ -81,6 +96,7 @@ class GateMiddleware:
         network = self.network
 
         pathname = request.path
+        price_config = resolve_route_config(pathname, self.routes_table, self.base_price_config)
         if is_public_path(pathname):
             return self.get_response(request)
 
@@ -128,21 +144,22 @@ class GateMiddleware:
                     new_key = generate_agent_key(secret)
                 if fee_info:
                     no_key_instructions = (
-                        f'Send {MIN_PAYMENT} USDC on Solana {network} to {wallet_address} with memo "{new_key}", '
+                        f'Send {price_config["min_payment"]} USDC on Solana {network} to {wallet_address} with memo "{new_key}", '
                         f'AND in the SAME transaction send the platform fee (see platform_fee below) to {fee_info["wallet"]}. '
                         f'Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
                     )
                 else:
-                    no_key_instructions = f'Send {MIN_PAYMENT} USDC on Solana {network} to {wallet_address} with memo "{new_key}". Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
+                    no_key_instructions = f'Send {price_config["min_payment"]} USDC on Solana {network} to {wallet_address} with memo "{new_key}". Then include the header X-Agent-Key: {new_key} on all subsequent requests.'
                 return _payment_required_response(
                     {
                         "error": "payment_required",
                         "message": "Access requires a paid API key. A key has been generated for you below. Send a USDC payment on Solana with this key as the memo to activate it, then retry your request with the X-Agent-Key header.",
                         "your_key": new_key,
-                        "payment": build_payment_object(network=network, min_payment=MIN_PAYMENT, wallet_address=wallet_address, memo=new_key, fee_info=fee_info, instructions=no_key_instructions),
+                        "payment": build_payment_object(network=network, min_payment=price_config["min_payment"], wallet_address=wallet_address, memo=new_key, fee_info=fee_info, instructions=no_key_instructions),
                     },
-                    wallet_address=wallet_address, mint=self.usdc_mint, min_payment=MIN_PAYMENT,
+                    wallet_address=wallet_address, mint=self.usdc_mint, min_payment=price_config["min_payment"],
                     debug=self.debug, agent_key=new_key, resource=pathname,
+                    extra_tier_opts=tier_x402_opts_list(price_config["pricing_tiers"], {"wallet_address": wallet_address, "mint": self.usdc_mint, "debug": self.debug, "agent_key": new_key, "resource": pathname}),
                 )
 
             # Validate the key. Platform-issued (agp_) use verificationSecret;
@@ -170,19 +187,24 @@ class GateMiddleware:
             if self.grant_store and self.grant_store.has(agent_key):
                 return self.get_response(request)
 
-            paid = verify_payment_on_chain(agent_key, wallet_address, self.rpc_url, self.usdc_mint, fee_info=fee_info)
+            scan_result = _scan_for_payment(agent_key, wallet_address, self.rpc_url, self.usdc_mint, min_payment=price_config["min_payment"], fee_info=fee_info)
+            paid = scan_result["paid"]
             if paid and self.grant_store:
-                self.grant_store.add(agent_key)
+                tier = resolve_tier(scan_result["amount_paid"], price_config["pricing_tiers"])
+                duration_seconds = tier["duration_seconds"] if tier else price_config["access_duration"]
+                expires_at = (_time.time() + duration_seconds) if duration_seconds else None
+                self.grant_store.add(agent_key, expires_at=expires_at, tier=(tier["name"] if tier else None))
             if not paid:
                 return _payment_required_response(
                     {
                         "error": "payment_required",
                         "message": "Key is valid but payment has not been verified on-chain yet.",
                         "your_key": agent_key,
-                        "payment": build_payment_object(network=network, min_payment=MIN_PAYMENT, wallet_address=wallet_address, memo=agent_key, fee_info=fee_info),
+                        "payment": build_payment_object(network=network, min_payment=price_config["min_payment"], wallet_address=wallet_address, memo=agent_key, fee_info=fee_info),
                     },
-                    wallet_address=wallet_address, mint=self.usdc_mint, min_payment=MIN_PAYMENT,
+                    wallet_address=wallet_address, mint=self.usdc_mint, min_payment=price_config["min_payment"],
                     debug=self.debug, agent_key=agent_key, resource=pathname,
+                    extra_tier_opts=tier_x402_opts_list(price_config["pricing_tiers"], {"wallet_address": wallet_address, "mint": self.usdc_mint, "debug": self.debug, "agent_key": agent_key, "resource": pathname}),
                 )
 
             return self.get_response(request)

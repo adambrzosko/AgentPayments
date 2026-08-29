@@ -4,6 +4,7 @@ import {
   hmacSign, generateAgentKey, isValidAgentKey,
   isPublicPath, isBrowser, getCookie, isValidCookie,
   challengePage, jsonResponse, clientIdForIp, verifyPaymentOnChain,
+  createEdgeGate, InMemoryStore,
 } from '../index.js';
 
 const SECRET = 'test-secret-edge';
@@ -215,4 +216,91 @@ test('verifyPaymentOnChain: fee wallet with no USDC account denies access', asyn
   });
   const result = await verifyPaymentOnChain(key, WALLET, [RPC], MINT, MIN_PAYMENT, FEE_INFO);
   assert.equal(result, false);
+});
+
+// ─── InMemoryStore: revocation ─────────────────────────────────────────────
+test('InMemoryStore.invalidatePayment clears a cached positive result', async () => {
+  const store = new InMemoryStore();
+  await store.setCachedPayment('ag_cached_key', true, 100000);
+  assert.equal(await store.getCachedPayment('ag_cached_key'), true);
+  await store.invalidatePayment('ag_cached_key');
+  assert.equal(await store.getCachedPayment('ag_cached_key'), undefined);
+});
+
+// ─── Pricing & access model (createEdgeGate) ───────────────────────────────
+function makeSpyStore() {
+  const inner = new InMemoryStore();
+  const setCachedPaymentCalls = [];
+  return {
+    consumeNonce: (...a) => inner.consumeNonce(...a),
+    checkRateLimit: (...a) => inner.checkRateLimit(...a),
+    getCachedPayment: (...a) => inner.getCachedPayment(...a),
+    setCachedPayment: (...a) => { setCachedPaymentCalls.push(a); return inner.setCachedPayment(...a); },
+    invalidatePayment: (...a) => inner.invalidatePayment(...a),
+    setCachedPaymentCalls,
+  };
+}
+
+const GATE_WALLET = '5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft';
+const GATE_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const GATE_RPC = 'https://api.devnet.solana.com';
+
+function gateAta(pubkey) {
+  return { value: [{ pubkey, account: { data: { parsed: { info: { mint: GATE_MINT } } } } }] };
+}
+function gateTx(memo, amount) {
+  return {
+    meta: { err: null, innerInstructions: [] },
+    transaction: { message: { instructions: [
+      { program: 'spl-token', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', parsed: { type: 'transferChecked', info: { mint: GATE_MINT, tokenAmount: { amount: String(Math.round(amount * 1e6)) }, destination: 'dest_ata_address' } } },
+      { program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: memo },
+    ] } },
+  };
+}
+function mockGateRpc(key, amountPaid) {
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    let result = null;
+    if (body.method === 'getTokenAccountsByOwner') result = gateAta('dest_ata_address');
+    else if (body.method === 'getSignaturesForAddress') result = [{ signature: 'sig1', err: null }];
+    else if (body.method === 'getTransaction') result = gateTx(key, amountPaid);
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result }) };
+  };
+}
+
+test('accessDuration overrides the default 10-minute cache TTL', async () => {
+  const key = await generateAgentKey(SECRET);
+  mockGateRpc(key, 0.01);
+  const spyStore = makeSpyStore();
+  const gate = createEdgeGate({
+    fetchUpstream: async () => new Response('ok'),
+    minPayment: 0.01,
+    accessDuration: 86400,
+    store: spyStore,
+  });
+  const req = new Request('https://x.com/data', { headers: { 'x-agent-key': key } });
+  const env = { CHALLENGE_SECRET: SECRET, HOME_WALLET_ADDRESS: GATE_WALLET, DEBUG: 'true', SOLANA_RPC_URL: GATE_RPC, USDC_MINT: GATE_MINT };
+  const res = await gate(req, env);
+  assert.equal(res.status, 200);
+  assert.equal(spyStore.setCachedPaymentCalls.length, 1);
+  assert.equal(spyStore.setCachedPaymentCalls[0][2], 86400 * 1000);
+});
+
+test('routes overrides minPayment for a matching path prefix', async () => {
+  const gate = createEdgeGate({
+    fetchUpstream: async () => new Response('ok'),
+    minPayment: 0.01,
+    routes: [{ pathPrefix: '/premium', minPayment: 0.05 }],
+  });
+  const env = { CHALLENGE_SECRET: SECRET, HOME_WALLET_ADDRESS: GATE_WALLET, DEBUG: 'true', SOLANA_RPC_URL: GATE_RPC, USDC_MINT: GATE_MINT };
+
+  const premiumReq = new Request('https://x.com/premium/data');
+  const premiumRes = await gate(premiumReq, env);
+  const premiumBody = await premiumRes.json();
+  assert.equal(premiumBody.payment.amount, '0.05');
+
+  const otherReq = new Request('https://x.com/other');
+  const otherRes = await gate(otherReq, env);
+  const otherBody = await otherRes.json();
+  assert.equal(otherBody.payment.amount, '0.01');
 });

@@ -432,6 +432,186 @@ describe('FileGrantStore', () => {
   });
 });
 
+// ─── Grant store: expiry, revocation, legacy-format migration ─────────────
+describe('Grant store expiry and revocation', () => {
+  test('MemoryGrantStore: expired grant is denied', () => {
+    const store = new MemoryGrantStore();
+    store.add('ag_expired', { expiresAt: Date.now() - 1000 });
+    assert.equal(store.has('ag_expired'), false);
+  });
+
+  test('MemoryGrantStore: unexpired grant is allowed', () => {
+    const store = new MemoryGrantStore();
+    store.add('ag_active', { expiresAt: Date.now() + 100000 });
+    assert.equal(store.has('ag_active'), true);
+  });
+
+  test('MemoryGrantStore: null expiresAt means unlimited (default)', () => {
+    const store = new MemoryGrantStore();
+    store.add('ag_forever');
+    assert.equal(store.has('ag_forever'), true);
+  });
+
+  test('MemoryGrantStore: revoke() denies a previously granted key', () => {
+    const store = new MemoryGrantStore();
+    store.add('ag_to_revoke');
+    assert.equal(store.has('ag_to_revoke'), true);
+    store.revoke('ag_to_revoke');
+    assert.equal(store.has('ag_to_revoke'), false);
+  });
+
+  test('MemoryGrantStore: revoke() pre-emptively blocks a never-added key', () => {
+    const store = new MemoryGrantStore();
+    store.revoke('ag_never_paid');
+    store.add('ag_never_paid'); // a later add() overwrites — documented last-write-wins v1 semantics
+    assert.equal(store.has('ag_never_paid'), true);
+  });
+
+  test('FileGrantStore: expiry and revoke persist across reload', () => {
+    const tmpFile = path.join(os.tmpdir(), `agp_grants_expiry_${Date.now()}.json`);
+    try {
+      const gs1 = new FileGrantStore(tmpFile);
+      gs1.add('ag_expiring', { expiresAt: Date.now() + 100000, tier: 'daily' });
+      gs1.add('ag_revoked');
+      gs1.revoke('ag_revoked');
+      const gs2 = new FileGrantStore(tmpFile);
+      assert.equal(gs2.has('ag_expiring'), true);
+      assert.equal(gs2.has('ag_revoked'), false);
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
+  });
+
+  test('FileGrantStore: reads legacy array-of-strings format as permanent grants', () => {
+    const tmpFile = path.join(os.tmpdir(), `agp_grants_legacy_${Date.now()}.json`);
+    try {
+      fs.writeFileSync(tmpFile, JSON.stringify(['ag_legacy_one', 'ag_legacy_two']));
+      const gs = new FileGrantStore(tmpFile);
+      assert.equal(gs.has('ag_legacy_one'), true);
+      assert.equal(gs.has('ag_legacy_two'), true);
+      assert.equal(gs.has('ag_legacy_three'), false);
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
+  });
+});
+
+// ─── Pricing tiers, access duration, and per-route pricing ────────────────
+describe('Pricing & access model', () => {
+  const WALLET = '5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft';
+  const MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
+  function ata(pubkey) {
+    return { value: [{ pubkey, account: { data: { parsed: { info: { mint: MINT } } } } }] };
+  }
+  function buildTx(memo, amount) {
+    return {
+      meta: { err: null, innerInstructions: [] },
+      transaction: { message: { instructions: [
+        { program: 'spl-token', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', parsed: { type: 'transferChecked', info: { mint: MINT, tokenAmount: { amount: String(Math.round(amount * 1e6)) }, destination: 'dest_ata_address' } } },
+        { program: 'spl-memo', programId: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', parsed: memo },
+      ] } },
+    };
+  }
+  const realFetch = global.fetch;
+  afterEach(() => { global.fetch = realFetch; });
+
+  test('pricingTiers grants the tier matching the actual amount paid', async () => {
+    const key = makeAgentKey(SECRET);
+    global.fetch = async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'getTokenAccountsByOwner') return { ok: true, json: async () => ({ result: ata('dest_ata_address') }) };
+      if (body.method === 'getSignaturesForAddress') return { ok: true, json: async () => ({ result: [{ signature: 'sig1', err: null }] }) };
+      if (body.method === 'getTransaction') return { ok: true, json: async () => ({ result: buildTx(key, 0.05) }) };
+      return { ok: true, json: async () => ({ result: null }) };
+    };
+    const grants = [];
+    const gate = agentPaymentsGate({
+      challengeSecret: SECRET,
+      homeWalletAddress: WALLET,
+      usdcMint: MINT,
+      debug: true,
+      pricingTiers: [
+        { minAmount: 0.01, durationSeconds: 3600, name: 'hourly' },
+        { minAmount: 0.05, durationSeconds: null, name: 'lifetime' },
+      ],
+      grantStore: { has: () => false, add: (k, grant) => grants.push({ k, grant }) },
+    });
+    const req = mockReq({ headers: { 'x-agent-key': key }, path: '/' });
+    const res = mockRes();
+    let nextCalled = false;
+    await gate(req, res, () => { nextCalled = true; });
+    assert.ok(nextCalled, 'payment matching the top tier should grant access');
+    assert.equal(grants.length, 1);
+    assert.equal(grants[0].grant.tier, 'lifetime');
+    assert.equal(grants[0].grant.expiresAt, null);
+  });
+
+  test('accessDuration grants a time-limited grant, not indefinite', async () => {
+    const key = makeAgentKey(SECRET);
+    global.fetch = async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'getTokenAccountsByOwner') return { ok: true, json: async () => ({ result: ata('dest_ata_address') }) };
+      if (body.method === 'getSignaturesForAddress') return { ok: true, json: async () => ({ result: [{ signature: 'sig1', err: null }] }) };
+      if (body.method === 'getTransaction') return { ok: true, json: async () => ({ result: buildTx(key, 0.01) }) };
+      return { ok: true, json: async () => ({ result: null }) };
+    };
+    let capturedGrant = null;
+    const gate = agentPaymentsGate({
+      challengeSecret: SECRET,
+      homeWalletAddress: WALLET,
+      usdcMint: MINT,
+      debug: true,
+      accessDuration: 86400,
+      grantStore: { has: () => false, add: (k, grant) => { capturedGrant = grant; } },
+    });
+    const req = mockReq({ headers: { 'x-agent-key': key }, path: '/' });
+    const res = mockRes();
+    await gate(req, res, () => {});
+    assert.ok(capturedGrant, 'grantStore.add should have been called');
+    assert.ok(capturedGrant.expiresAt > Date.now(), 'expiresAt should be in the future');
+    assert.ok(capturedGrant.expiresAt <= Date.now() + 86400 * 1000 + 1000);
+  });
+
+  test('routes overrides minPayment for a matching path prefix', async () => {
+    const gate = agentPaymentsGate({
+      challengeSecret: SECRET,
+      homeWalletAddress: WALLET,
+      debug: true,
+      minPayment: 0.01,
+      routes: [{ pathPrefix: '/premium', minPayment: 0.05 }],
+    });
+
+    const premiumReq = mockReq({ path: '/premium/data', originalUrl: '/premium/data' });
+    const premiumRes = mockRes();
+    await gate(premiumReq, premiumRes, () => {});
+    const premiumBody = JSON.parse(premiumRes._body);
+    assert.equal(premiumBody.payment.amount, '0.05');
+
+    const otherReq = mockReq({ path: '/other', originalUrl: '/other' });
+    const otherRes = mockRes();
+    await gate(otherReq, otherRes, () => {});
+    const otherBody = JSON.parse(otherRes._body);
+    assert.equal(otherBody.payment.amount, '0.01');
+  });
+
+  test('routes does not match a non-prefix-boundary path', async () => {
+    const gate = agentPaymentsGate({
+      challengeSecret: SECRET,
+      homeWalletAddress: WALLET,
+      debug: true,
+      minPayment: 0.01,
+      routes: [{ pathPrefix: '/premium', minPayment: 0.05 }],
+    });
+    // '/premium-lookalike' shares the string prefix but not a path boundary.
+    const req = mockReq({ path: '/premium-lookalike', originalUrl: '/premium-lookalike' });
+    const res = mockRes();
+    await gate(req, res, () => {});
+    const body = JSON.parse(res._body);
+    assert.equal(body.payment.amount, '0.01');
+  });
+});
+
 // ─── Cross-runtime HMAC parity ────────────────────────────────────────────
 describe('Cross-runtime HMAC parity', () => {
   // Node produces a reference value; we confirm Python matches in the Python suite.

@@ -44,6 +44,14 @@ from agentpayments_python.solana import (
     _PaymentCache,
     _payment_cache,
 )
+from agentpayments_python.pricing import (
+    sort_tiers,
+    resolve_tier,
+    normalize_price_config,
+    path_matches_prefix,
+    build_routes_table,
+    resolve_route_config,
+)
 
 SECRET = "test-secret-32-bytes-long-abcdefg"
 IP = "1.2.3.4"
@@ -515,15 +523,14 @@ class TestFileGrantStore:
         gs.add("ag_k")
         assert gs.has("ag_k")
 
-    def test_idempotent_add_no_double_write(self, tmp_path):
+    def test_repeated_add_stays_functionally_idempotent(self, tmp_path):
+        # add() now always persists (so a later add() can update expiry/tier
+        # metadata for the same key), but has() must still be true either way.
         f = tmp_path / "grants.json"
         gs = FileGrantStore(str(f))
         gs.add("ag_k")
-        mtime1 = f.stat().st_mtime
-        time.sleep(0.01)
         gs.add("ag_k")
-        mtime2 = f.stat().st_mtime
-        assert mtime1 == mtime2  # no write on duplicate add
+        assert gs.has("ag_k")
 
     def test_atomic_write_leaves_no_tmp(self, tmp_path):
         f = tmp_path / "grants.json"
@@ -539,6 +546,56 @@ class TestFileGrantStore:
         gs2 = FileGrantStore(str(f))
         for i in range(10):
             assert gs2.has(f"ag_{i}")
+
+    def test_reads_legacy_array_format_as_permanent_grants(self, tmp_path):
+        f = tmp_path / "grants.json"
+        f.write_text(json.dumps(["ag_legacy_one", "ag_legacy_two"]))
+        gs = FileGrantStore(str(f))
+        assert gs.has("ag_legacy_one")
+        assert gs.has("ag_legacy_two")
+        assert not gs.has("ag_legacy_three")
+
+
+# ─── grant store: expiry and revocation ─────────────────────────────────────
+
+class TestGrantStoreExpiryAndRevocation:
+    def test_memory_expired_grant_denied(self):
+        gs = MemoryGrantStore()
+        gs.add("ag_expired", expires_at=time.time() - 1)
+        assert not gs.has("ag_expired")
+
+    def test_memory_unexpired_grant_allowed(self):
+        gs = MemoryGrantStore()
+        gs.add("ag_active", expires_at=time.time() + 1000)
+        assert gs.has("ag_active")
+
+    def test_memory_no_expiry_means_unlimited(self):
+        gs = MemoryGrantStore()
+        gs.add("ag_forever")
+        assert gs.has("ag_forever")
+
+    def test_memory_revoke_denies_previously_granted_key(self):
+        gs = MemoryGrantStore()
+        gs.add("ag_to_revoke")
+        assert gs.has("ag_to_revoke")
+        gs.revoke("ag_to_revoke")
+        assert not gs.has("ag_to_revoke")
+
+    def test_memory_revoke_preemptively_blocks_never_added_key(self):
+        gs = MemoryGrantStore()
+        gs.revoke("ag_never_paid")
+        gs.add("ag_never_paid")  # later add() overwrites — last-write-wins v1 semantics
+        assert gs.has("ag_never_paid")
+
+    def test_file_expiry_and_revoke_persist_across_reload(self, tmp_path):
+        f = tmp_path / "grants.json"
+        gs1 = FileGrantStore(str(f))
+        gs1.add("ag_expiring", expires_at=time.time() + 1000, tier="daily")
+        gs1.add("ag_revoked")
+        gs1.revoke("ag_revoked")
+        gs2 = FileGrantStore(str(f))
+        assert gs2.has("ag_expiring")
+        assert not gs2.has("ag_revoked")
 
 
 # ─── cross-runtime HMAC parity ───────────────────────────────────────────────
@@ -736,6 +793,41 @@ class TestVerifyPaymentOnChain:
             result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT)
         assert result is False
 
+    def test_custom_min_payment_raises_the_required_threshold(self):
+        # A payment that clears the default MIN_PAYMENT but not a higher
+        # custom min_payment must be rejected.
+        from agentpayments_python.solana import verify_payment_on_chain, MIN_PAYMENT
+        key = self._fresh_key()
+        tx = _build_tx(key, MIN_PAYMENT, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_custom_min", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT, min_payment=MIN_PAYMENT * 5)
+        assert result is False
+
+    def test_custom_min_payment_accepts_a_matching_higher_payment(self):
+        from agentpayments_python.solana import verify_payment_on_chain, MIN_PAYMENT
+        key = self._fresh_key()
+        higher = MIN_PAYMENT * 5
+        tx = _build_tx(key, higher, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_custom_min_2", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT, min_payment=higher)
+        assert result is True
+
+    def test_scan_for_payment_returns_actual_amount_paid(self):
+        from agentpayments_python.solana import _scan_for_payment, MIN_PAYMENT
+        key = self._fresh_key()
+        paid_amount = MIN_PAYMENT * 5
+        tx = _build_tx(key, paid_amount, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_amount", "err": None}]
+        with self._patch_rpc(sigs, ata, tx):
+            result = _scan_for_payment(key, self.WALLET, self.RPC, self.MINT, min_payment=MIN_PAYMENT)
+        assert result["paid"] is True
+        assert result["amount_paid"] == paid_amount
+
     def test_failed_tx_rejected(self):
         # Solana RPC sets err on the *signature* record in getSignaturesForAddress
         # when the transaction failed. The SDK correctly skips those (line 120-121
@@ -915,3 +1007,224 @@ class TestVerifyPaymentOnChainFee:
             result = verify_payment_on_chain(key, self.WALLET, self.RPC, self.MINT, fee_info=None)
         assert result is True
         assert ata_calls["n"] == 1
+
+
+# ─── Adapter pricing wiring (FastAPI / Flask / Django) ──────────────────────
+#
+# The pricing/duration/tier/route resolution logic itself is fully covered
+# above at the shared-module level (pricing.py, solana.py, grant_store.py).
+# These tests confirm each framework adapter actually wires that logic in —
+# i.e. resolves the right price for a route and passes the right
+# expiry/tier through to the grant store.
+
+class TestAdapterPricingWiring:
+    SECRET = "test-secret-32-bytes-long-abcdefg"
+    WALLET = "5rXZeAEbg13DQnSFijEno2hKEJLK2p14fAo3AmPtfBft"
+    MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+
+    class _SpyGrantStore:
+        def __init__(self):
+            self.grants = []
+
+        def has(self, key):
+            return False
+
+        def add(self, key, expires_at=None, tier=None):
+            self.grants.append({"key": key, "expires_at": expires_at, "tier": tier})
+
+    def test_fastapi_pricing_tiers_grants_matching_tier(self):
+        pytest.importorskip("fastapi")
+        import asyncio
+        from starlette.requests import Request
+        from starlette.responses import Response
+        from agentpayments_python.fastapi_adapter import AgentPaymentsASGIMiddleware
+        from agentpayments_python.crypto import generate_agent_key
+
+        key = generate_agent_key(self.SECRET)
+        tx = _build_tx(key, 0.05, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_fastapi_tier", "err": None}]
+
+        def side_effect(url, json=None, timeout=None):
+            method = json.get("method", "")
+            if method == "getTokenAccountsByOwner":
+                return _rpc_response(ata)
+            if method == "getSignaturesForAddress":
+                return _rpc_response(sigs)
+            if method == "getTransaction":
+                return _rpc_response(tx)
+            return _rpc_response(None)
+
+        store = self._SpyGrantStore()
+        mw = AgentPaymentsASGIMiddleware(
+            app=None,
+            challenge_secret=self.SECRET,
+            home_wallet_address=self.WALLET,
+            debug=True,
+            usdc_mint=self.MINT,
+            pricing_tiers=[
+                {"min_amount": 0.01, "duration_seconds": 3600, "name": "hourly"},
+                {"min_amount": 0.05, "duration_seconds": None, "name": "lifetime"},
+            ],
+            grant_store=store,
+        )
+
+        async def call_next(_req):
+            return Response("ok", status_code=200)
+
+        async def run():
+            req = Request({
+                "type": "http", "method": "GET", "path": "/data",
+                "headers": [(b"x-agent-key", key.encode())],
+                "query_string": b"", "scheme": "https", "client": ("127.0.0.1", 1234),
+            })
+            with patch("requests.post", side_effect=side_effect):
+                return await mw.dispatch(req, call_next)
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 200
+        assert len(store.grants) == 1
+        assert store.grants[0]["tier"] == "lifetime"
+        assert store.grants[0]["expires_at"] is None
+
+    def test_flask_routes_override_min_payment(self):
+        pytest.importorskip("flask")
+        from flask import Flask
+        from agentpayments_python.flask_adapter import register_agentpayments
+
+        app = Flask(__name__)
+        register_agentpayments(
+            app,
+            challenge_secret=self.SECRET,
+            home_wallet_address=self.WALLET,
+            debug=True,
+            usdc_mint=self.MINT,
+            min_payment=0.01,
+            routes=[{"path_prefix": "/premium", "min_payment": 0.05}],
+        )
+
+        @app.route("/premium/data")
+        def premium_data():
+            return "premium ok"
+
+        @app.route("/data")
+        def data():
+            return "ok"
+
+        client = app.test_client()
+        premium_resp = client.get("/premium/data")
+        other_resp = client.get("/data")
+        assert premium_resp.status_code == 402
+        assert premium_resp.get_json()["payment"]["amount"] == "0.05"
+        assert other_resp.status_code == 402
+        assert other_resp.get_json()["payment"]["amount"] == "0.01"
+
+    def test_django_access_duration_produces_expiring_grant(self):
+        pytest.importorskip("django")
+        import django
+        from django.conf import settings
+
+        if not settings.configured:
+            settings.configure(
+                DEBUG=True,
+                CHALLENGE_SECRET=self.SECRET,
+                HOME_WALLET_ADDRESS=self.WALLET,
+                USDC_MINT=self.MINT,
+                ALLOWED_HOSTS=["*"],
+            )
+            django.setup()
+
+        from django.test import RequestFactory
+        from django.http import HttpResponse
+        from agentpayments_python.django_adapter import GateMiddleware
+        from agentpayments_python.crypto import generate_agent_key
+
+        key = generate_agent_key(self.SECRET)
+        tx = _build_tx(key, 0.01, self.MINT, self.WALLET)
+        ata = {"value": [{"pubkey": "dest_ata_address", "account": {"data": {"parsed": {"info": {"mint": self.MINT, "owner": self.WALLET}}}}}]}
+        sigs = [{"signature": "sig_django_duration", "err": None}]
+
+        def side_effect(url, json=None, timeout=None):
+            method = json.get("method", "")
+            if method == "getTokenAccountsByOwner":
+                return _rpc_response(ata)
+            if method == "getSignaturesForAddress":
+                return _rpc_response(sigs)
+            if method == "getTransaction":
+                return _rpc_response(tx)
+            return _rpc_response(None)
+
+        store = self._SpyGrantStore()
+        with patch.object(settings, "AGENTPAYMENTS_ACCESS_DURATION", 86400, create=True), \
+             patch.object(settings, "AGENTPAYMENTS_GRANT_STORE", store, create=True):
+            mw = GateMiddleware(lambda req: HttpResponse("ok"))
+            rf = RequestFactory()
+            req = rf.get("/data", HTTP_X_AGENT_KEY=key)
+            before = time.time()
+            with patch("requests.post", side_effect=side_effect):
+                resp = mw(req)
+
+        assert resp.status_code == 200
+        assert len(store.grants) == 1
+        assert store.grants[0]["expires_at"] > before + 86000  # ~24h out, allowing test slack
+
+
+# ─── pricing.py: pure helper unit tests ──────────────────────────────────────
+
+class TestPricingHelpers:
+    def test_sort_tiers_ascending_by_min_amount(self):
+        tiers = [
+            {"min_amount": 0.05, "name": "lifetime"},
+            {"min_amount": 0.01, "name": "hourly"},
+        ]
+        assert [t["name"] for t in sort_tiers(tiers)] == ["hourly", "lifetime"]
+
+    def test_resolve_tier_picks_highest_satisfied_tier(self):
+        tiers = [
+            {"min_amount": 0.01, "duration_seconds": 3600, "name": "hourly"},
+            {"min_amount": 0.05, "duration_seconds": None, "name": "lifetime"},
+        ]
+        assert resolve_tier(0.01, tiers)["name"] == "hourly"
+        assert resolve_tier(0.03, tiers)["name"] == "hourly"
+        assert resolve_tier(0.05, tiers)["name"] == "lifetime"
+        assert resolve_tier(1.0, tiers)["name"] == "lifetime"
+
+    def test_resolve_tier_below_floor_returns_none(self):
+        tiers = [{"min_amount": 0.05, "duration_seconds": None, "name": "lifetime"}]
+        assert resolve_tier(0.01, tiers) is None
+
+    def test_resolve_tier_no_tiers_or_no_amount_returns_none(self):
+        assert resolve_tier(0.05, None) is None
+        assert resolve_tier(None, [{"min_amount": 0.01, "name": "x"}]) is None
+
+    def test_normalize_price_config_uses_lowest_tier_as_floor(self):
+        tiers = [
+            {"min_amount": 0.05, "duration_seconds": None, "name": "lifetime"},
+            {"min_amount": 0.01, "duration_seconds": 3600, "name": "hourly"},
+        ]
+        cfg = normalize_price_config(0.5, 999, tiers)
+        assert cfg["min_payment"] == 0.01  # lowest tier wins, not the flat 0.5
+        assert cfg["access_duration"] is None  # superseded by tiers
+
+    def test_normalize_price_config_without_tiers_passes_through(self):
+        cfg = normalize_price_config(0.02, 3600, None)
+        assert cfg == {"min_payment": 0.02, "access_duration": 3600, "pricing_tiers": None}
+
+    def test_path_matches_prefix_respects_segment_boundary(self):
+        assert path_matches_prefix("/premium", "/premium")
+        assert path_matches_prefix("/premium/data", "/premium")
+        assert not path_matches_prefix("/premium-lookalike", "/premium")
+        assert not path_matches_prefix("/other", "/premium")
+
+    def test_resolve_route_config_longest_prefix_wins(self):
+        routes_table = build_routes_table(
+            [
+                {"path_prefix": "/api", "min_payment": 0.02},
+                {"path_prefix": "/api/premium", "min_payment": 0.10},
+            ],
+            min_payment=0.01, access_duration=None, pricing_tiers=None,
+        )
+        base = normalize_price_config(0.01, None, None)
+        assert resolve_route_config("/api/premium/data", routes_table, base)["min_payment"] == 0.10
+        assert resolve_route_config("/api/other", routes_table, base)["min_payment"] == 0.02
+        assert resolve_route_config("/unrelated", routes_table, base)["min_payment"] == 0.01

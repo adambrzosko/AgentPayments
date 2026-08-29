@@ -1,3 +1,20 @@
+export interface PricingTier {
+  /** Minimum on-chain payment (USDC) required to qualify for this tier. */
+  minAmount: number;
+  /** Seconds the grant lasts once this tier is reached. null = unlimited. */
+  durationSeconds?: number | null;
+  /** Tier name, surfaced in the x402 402 response. */
+  name?: string;
+}
+
+export interface RouteConfig {
+  /** Path prefix this override applies to (matched on a path-segment boundary). */
+  pathPrefix: string;
+  minPayment?: number;
+  accessDuration?: number | null;
+  pricingTiers?: PricingTier[] | null;
+}
+
 export interface EdgeGateOptions {
   /**
    * Function to fetch the upstream/origin response.
@@ -13,6 +30,16 @@ export interface EdgeGateOptions {
   publicPathAllowlist?: string[];
   /** Minimum USDC payment amount. Defaults to 0.01. */
   minPayment?: number;
+  /**
+   * Seconds a successful payment grants access for, via the payment-cache TTL
+   * (Edge has no durable grant store). null (default) keeps the standard
+   * 10-minute cache. Ignored when pricingTiers is set.
+   */
+  accessDuration?: number | null;
+  /** Payment-amount -> access mapping. Overrides minPayment/accessDuration when set. */
+  pricingTiers?: PricingTier[] | null;
+  /** Per-route price/duration/tier overrides for a single gate instance, matched by longest pathPrefix. */
+  routes?: RouteConfig[] | null;
   /**
    * Async function to resolve environment variables per-request.
    * Useful for platforms where env is passed per-request (e.g., Cloudflare Workers).
