@@ -98,17 +98,23 @@ def is_valid_solana_address(address: str) -> bool:
     return bool(address and BASE58_RE.match(address))
 
 
-def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url, usdc_mint: str, min_payment: float = MIN_PAYMENT, fee_info: dict | None = None) -> bool:
+def verify_payment_on_chain(agent_key: str, wallet_address: str, rpc_url, usdc_mint: str, min_payment: float = MIN_PAYMENT, fee_info: dict | None = None, payment_cache=None) -> bool:
     """
     Verify payment on-chain. Returns true/false only — the stable, tested
     public API. See _scan_for_payment below for the amount-returning variant
     used internally for pricing-tier resolution.
+
+    payment_cache: optional cache object with the same interface as the
+    module-level default (get(key) -> True/False/None, set(key, value, ttl)).
+    Pass a agentpayments_python.redis_store.PaymentCache for multi-process
+    deployments where the default in-memory cache (per-process) is
+    ineffective. Defaults to the module-level singleton.
     """
-    result = _scan_for_payment(agent_key, wallet_address, rpc_url, usdc_mint, min_payment=min_payment, fee_info=fee_info)
+    result = _scan_for_payment(agent_key, wallet_address, rpc_url, usdc_mint, min_payment=min_payment, fee_info=fee_info, payment_cache=payment_cache)
     return result["paid"]
 
 
-def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: str, min_payment: float = MIN_PAYMENT, fee_info: dict | None = None) -> dict:
+def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: str, min_payment: float = MIN_PAYMENT, fee_info: dict | None = None, payment_cache=None) -> dict:
     """
     Scans the chain for a matching payment, same as verify_payment_on_chain,
     but also returns the actual amount paid (decimal USDC) so callers can
@@ -120,12 +126,13 @@ def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: s
     the vendor payment must also carry a USDC transfer to fee_info["wallet"] of at
     least min_payment * rate_pct / 100, or the payment is treated as unverified.
     """
+    cache = payment_cache if payment_cache is not None else _payment_cache
     # Normalise to list so _rpc_call_with_fallback always gets a list.
     rpc_urls: list[str] = rpc_url if isinstance(rpc_url, list) else [rpc_url]
     min_payment_micro = round(min_payment * 1_000_000)
     not_paid = {"paid": False, "amount_paid": None}
 
-    cached = _payment_cache.get(agent_key)
+    cached = cache.get(agent_key)
     if cached is True:
         return {"paid": True, "amount_paid": None}  # cache doesn't retain the amount
     if cached is False:
@@ -229,10 +236,10 @@ def _scan_for_payment(agent_key: str, wallet_address: str, rpc_url, usdc_mint: s
                             has_fee_payment = True
 
             if has_memo and has_payment and has_fee_payment:
-                _payment_cache.set(agent_key, True, PAYMENT_CACHE_TTL)
+                cache.set(agent_key, True, PAYMENT_CACHE_TTL)
                 return {"paid": True, "amount_paid": matched_amount_micro / 1_000_000}
     except Exception:
         logger.exception("[gate] Solana RPC error")
 
-    _payment_cache.set(agent_key, False, NEGATIVE_CACHE_TTL)
+    cache.set(agent_key, False, NEGATIVE_CACHE_TTL)
     return not_paid

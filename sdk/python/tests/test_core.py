@@ -38,6 +38,11 @@ from agentpayments_python.challenge import (
 from agentpayments_python.detection import is_browser_from_headers, is_public_path
 from agentpayments_python.ratelimit import RateLimiter
 from agentpayments_python.grant_store import FileGrantStore, MemoryGrantStore
+from agentpayments_python.redis_store import (
+    RateLimiter as RedisRateLimiter,
+    PaymentCache as RedisPaymentCache,
+    create_redis_store,
+)
 from agentpayments_python.solana import (
     NEGATIVE_CACHE_TTL,
     PAYMENT_CACHE_TTL,
@@ -472,6 +477,108 @@ class TestPaymentCache:
         cache.set("d", True, 600)  # should evict "a"
         assert cache.get("a") is None
         assert cache.get("d") is True
+
+
+# ─── redis_store: pluggable state backend for multi-process deployments ────
+
+class FakeRedis:
+    """Minimal fake standing in for a redis-py client: eval/get/set only."""
+
+    def __init__(self):
+        self._counters = {}
+        self._values = {}
+        self.fail = False
+
+    def eval(self, script, numkeys, key, ttl):
+        if self.fail:
+            raise ConnectionError("redis unavailable")
+        self._counters[key] = self._counters.get(key, 0) + 1
+        return self._counters[key]
+
+    def get(self, key):
+        if self.fail:
+            raise ConnectionError("redis unavailable")
+        return self._values.get(key)
+
+    def set(self, key, value, ex=None):
+        if self.fail:
+            raise ConnectionError("redis unavailable")
+        self._values[key] = value.encode() if isinstance(value, str) else value
+
+
+class TestRedisRateLimiter:
+    def test_allows_under_the_limit(self):
+        limiter = RedisRateLimiter(FakeRedis(), max_hits=3)
+        assert limiter.check("1.2.3.4")
+        assert limiter.check("1.2.3.4")
+        assert limiter.check("1.2.3.4")
+
+    def test_denies_over_the_limit(self):
+        limiter = RedisRateLimiter(FakeRedis(), max_hits=3)
+        for _ in range(3):
+            assert limiter.check("1.2.3.4")
+        assert not limiter.check("1.2.3.4")
+
+    def test_different_keys_independent(self):
+        redis = FakeRedis()
+        limiter = RedisRateLimiter(redis, max_hits=1)
+        assert limiter.check("a")
+        assert not limiter.check("a")
+        assert limiter.check("b")  # separate key, separate budget
+
+    def test_fails_open_on_redis_error(self):
+        redis = FakeRedis()
+        redis.fail = True
+        limiter = RedisRateLimiter(redis, max_hits=1)
+        assert limiter.check("1.2.3.4"), "a Redis outage must not block legitimate traffic"
+
+
+class TestRedisPaymentCache:
+    def test_miss_returns_none(self):
+        cache = RedisPaymentCache(FakeRedis())
+        assert cache.get("ag_unknown") is None
+
+    def test_positive_and_negative_roundtrip(self):
+        redis = FakeRedis()
+        cache = RedisPaymentCache(redis)
+        cache.set("ag_paid", True, 600)
+        cache.set("ag_unpaid", False, 30)
+        assert cache.get("ag_paid") is True
+        assert cache.get("ag_unpaid") is False
+
+    def test_fails_open_on_redis_error(self):
+        redis = FakeRedis()
+        redis.fail = True
+        cache = RedisPaymentCache(redis)
+        assert cache.get("ag_key") is None  # treated as a cache miss, not a crash
+        cache.set("ag_key", True, 600)  # must not raise
+
+
+class TestCreateRedisStore:
+    def test_returns_expected_keys(self):
+        store = create_redis_store(FakeRedis())
+        assert set(store.keys()) == {
+            "challenge_verify_rate_limiter",
+            "agent_key_rate_limiter",
+            "challenge_issue_rate_limiter",
+            "payment_cache",
+        }
+
+    def test_limiters_use_distinct_keyspaces(self):
+        # Same IP hitting two different limiters from the same store must not
+        # share a rate-limit budget with each other.
+        redis = FakeRedis()
+        store = create_redis_store(redis)
+        for _ in range(10):
+            store["agent_key_rate_limiter"].check("1.2.3.4")
+        assert store["challenge_verify_rate_limiter"].check("1.2.3.4")
+
+    def test_default_max_hits_match_built_in_limiters(self):
+        store = create_redis_store(FakeRedis())
+        # agent_key: 10/min, challenge_verify: 20/min, challenge_issue: 30/min
+        for _ in range(10):
+            assert store["agent_key_rate_limiter"].check("k")
+        assert not store["agent_key_rate_limiter"].check("k")
 
 
 # ─── grant stores ────────────────────────────────────────────────────────────
@@ -1167,6 +1274,115 @@ class TestAdapterPricingWiring:
         assert resp.status_code == 200
         assert len(store.grants) == 1
         assert store.grants[0]["expires_at"] > before + 86000  # ~24h out, allowing test slack
+
+    class _AlwaysDenyLimiter:
+        def check(self, key):
+            return False
+
+    class _PreSeededPaymentCache:
+        """Reports the given key as already paid, no matter what — used to
+        prove the gate consults the injected cache instead of a hardcoded
+        singleton, without needing a real chain scan."""
+        def __init__(self, key):
+            self._key = key
+
+        def get(self, key):
+            return True if key == self._key else None
+
+        def set(self, key, value, ttl):
+            pass
+
+    def test_fastapi_custom_agent_key_rate_limiter_is_used(self):
+        pytest.importorskip("fastapi")
+        import asyncio
+        from starlette.requests import Request
+        from starlette.responses import Response
+        from agentpayments_python.fastapi_adapter import AgentPaymentsASGIMiddleware
+        from agentpayments_python.crypto import generate_agent_key
+
+        key = generate_agent_key(self.SECRET)
+        mw = AgentPaymentsASGIMiddleware(
+            app=None,
+            challenge_secret=self.SECRET,
+            home_wallet_address=self.WALLET,
+            debug=True,
+            usdc_mint=self.MINT,
+            agent_key_rate_limiter=self._AlwaysDenyLimiter(),
+        )
+
+        async def call_next(_req):
+            return Response("ok", status_code=200)
+
+        async def run():
+            req = Request({
+                "type": "http", "method": "GET", "path": "/data",
+                "headers": [(b"x-agent-key", key.encode())],
+                "query_string": b"", "scheme": "https", "client": ("127.0.0.1", 1234),
+            })
+            return await mw.dispatch(req, call_next)
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 429
+
+    def test_flask_custom_payment_cache_short_circuits_chain_scan(self):
+        pytest.importorskip("flask")
+        from flask import Flask
+        from agentpayments_python.flask_adapter import register_agentpayments
+        from agentpayments_python.crypto import generate_agent_key
+
+        key = generate_agent_key(self.SECRET)
+        app = Flask(__name__)
+        register_agentpayments(
+            app,
+            challenge_secret=self.SECRET,
+            home_wallet_address=self.WALLET,
+            debug=True,
+            usdc_mint=self.MINT,
+            payment_cache=self._PreSeededPaymentCache(key),
+        )
+
+        @app.route("/data")
+        def data():
+            return "ok"
+
+        client = app.test_client()
+        # No RPC mock at all -- if the gate ignored the injected cache and
+        # fell through to a real chain scan, this would hit the live network
+        # (and almost certainly fail/timeout in CI) instead of the assertion below.
+        with patch("requests.post", side_effect=AssertionError("should not hit the network — payment_cache should have short-circuited this")):
+            resp = client.get("/data", headers={"X-Agent-Key": key})
+        assert resp.status_code == 200
+
+    def test_django_custom_challenge_issue_rate_limiter_is_used(self):
+        pytest.importorskip("django")
+        import django
+        from django.conf import settings
+
+        if not settings.configured:
+            settings.configure(
+                DEBUG=True,
+                CHALLENGE_SECRET=self.SECRET,
+                HOME_WALLET_ADDRESS=self.WALLET,
+                USDC_MINT=self.MINT,
+                ALLOWED_HOSTS=["*"],
+            )
+            django.setup()
+
+        from django.test import RequestFactory
+        from django.http import HttpResponse
+        from agentpayments_python.django_adapter import GateMiddleware
+
+        with patch.object(settings, "AGENTPAYMENTS_CHALLENGE_ISSUE_RATE_LIMITER", self._AlwaysDenyLimiter(), create=True):
+            mw = GateMiddleware(lambda req: HttpResponse("ok"))
+            rf = RequestFactory()
+            # A plain browser-shaped request (no agent key, no Sec-Fetch/UA —
+            # still non-browser per is_browser_from_headers) won't reach the
+            # challenge-issuance path; use a UA that resolves to "browser" so
+            # the request falls through to the rate-limited challenge page.
+            req = rf.get("/", HTTP_SEC_FETCH_MODE="navigate", HTTP_SEC_FETCH_DEST="document")
+            resp = mw(req)
+
+        assert resp.status_code == 429
 
 
 # ─── pricing.py: pure helper unit tests ──────────────────────────────────────

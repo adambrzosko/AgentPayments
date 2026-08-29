@@ -46,7 +46,7 @@ def _client_ip(request: Request) -> str:
 
 
 class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", min_payment: float = MIN_PAYMENT, access_duration: float | None = None, pricing_tiers: list[dict] | None = None, routes: list[dict] | None = None, pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None):
+    def __init__(self, app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", min_payment: float = MIN_PAYMENT, access_duration: float | None = None, pricing_tiers: list[dict] | None = None, routes: list[dict] | None = None, pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None, agent_key_rate_limiter=None, challenge_issue_rate_limiter=None, payment_cache=None):
         super().__init__(app)
         if challenge_secret == "default-secret-change-me":
             import logging
@@ -72,6 +72,14 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
         self.grant_store = grant_store
         self.require_https = (not debug) if require_https is None else require_https
         self._platform_client = PlatformClient(api_key, platform_url) if api_key else None
+        # Pluggable rate limiter / payment cache — default to the built-in
+        # in-memory singletons (fine for single-process deployments). For
+        # multi-process (e.g. gunicorn -w 4), pass Redis-backed instances
+        # from agentpayments_python.redis_store so state is shared across
+        # workers instead of each worker enforcing its own independent limit.
+        self.agent_key_rate_limiter = agent_key_rate_limiter or _agent_key_limiter
+        self.challenge_issue_rate_limiter = challenge_issue_rate_limiter or _challenge_issue_limiter
+        self.payment_cache = payment_cache
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -154,7 +162,7 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
             elif not is_valid_agent_key(agent_key, self.challenge_secret):
                 return JSONResponse({"error": "forbidden", "message": "Invalid API key."}, status_code=403)
 
-            if not _agent_key_limiter.check(_client_ip(request)):
+            if not self.agent_key_rate_limiter.check(_client_ip(request)):
                 return JSONResponse({"error": "rate_limited", "message": "Too many payment verification requests. Please wait and try again."}, status_code=429)
 
             if not self.home_wallet_address:
@@ -167,7 +175,7 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
             # _scan_for_payment is synchronous (uses requests). Run it in a
             # thread-pool executor so it doesn't block the async event loop.
             scan_result = await loop.run_in_executor(
-                None, lambda: _scan_for_payment(agent_key, self.home_wallet_address, self.solana_rpc_url, self.usdc_mint, min_payment=price_config["min_payment"], fee_info=fee_info)
+                None, lambda: _scan_for_payment(agent_key, self.home_wallet_address, self.solana_rpc_url, self.usdc_mint, min_payment=price_config["min_payment"], fee_info=fee_info, payment_cache=self.payment_cache)
             )
             paid = scan_result["paid"]
             if paid and self.grant_store:
@@ -195,7 +203,7 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
         if is_valid_cookie_value(cookie_val, self.challenge_secret, client_ip):
             return await call_next(request)
 
-        if not _challenge_issue_limiter.check(client_ip):
+        if not self.challenge_issue_rate_limiter.check(client_ip):
             return JSONResponse({"error": "rate_limited", "message": "Too many requests. Please try again later."}, status_code=429)
 
         nonce = make_nonce(self.challenge_secret, client_ip)
@@ -206,9 +214,10 @@ class AgentPaymentsASGIMiddleware(BaseHTTPMiddleware):
         })
 
 
-async def challenge_verify_endpoint(request: Request, challenge_secret: str, pow_difficulty: int = POW_DIFFICULTY):
+async def challenge_verify_endpoint(request: Request, challenge_secret: str, pow_difficulty: int = POW_DIFFICULTY, rate_limiter=None):
     client_ip = _client_ip(request)
-    if not _challenge_limiter.check(client_ip):
+    limiter = rate_limiter or _challenge_limiter
+    if not limiter.check(client_ip):
         return JSONResponse({"error": "rate_limited", "message": "Too many verification attempts. Please wait and try again."}, status_code=429)
     form = await request.form()
     nonce = str(form.get("nonce", ""))[:MAX_NONCE_LENGTH]

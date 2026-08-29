@@ -39,7 +39,15 @@ def _client_ip() -> str:
     return request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "unknown"
 
 
-def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", min_payment: float = MIN_PAYMENT, access_duration: float | None = None, pricing_tiers: list[dict] | None = None, routes: list[dict] | None = None, pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None):
+def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: str, debug: bool = True, solana_rpc_url=None, usdc_mint: str = "", min_payment: float = MIN_PAYMENT, access_duration: float | None = None, pricing_tiers: list[dict] | None = None, routes: list[dict] | None = None, pow_difficulty: int = POW_DIFFICULTY, verify_crawlers: bool = True, grant_store=None, require_https: bool = None, api_key: str = None, platform_url: str = None, challenge_verify_rate_limiter=None, agent_key_rate_limiter=None, challenge_issue_rate_limiter=None, payment_cache=None):
+    # Pluggable rate limiters / payment cache — default to the built-in
+    # in-memory singletons (fine for single-process deployments). For
+    # multi-process (e.g. gunicorn -w 4), pass Redis-backed instances from
+    # agentpayments_python.redis_store so state is shared across workers
+    # instead of each worker enforcing its own independent limit.
+    _challenge_verify_limiter = challenge_verify_rate_limiter or _challenge_limiter
+    _agent_key_rate_limiter = agent_key_rate_limiter or _agent_key_limiter
+    _challenge_issue_rate_limiter = challenge_issue_rate_limiter or _challenge_issue_limiter
     if challenge_secret == "default-secret-change-me":
         import logging
         logger = logging.getLogger("agentpayments")
@@ -133,13 +141,13 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
                     return jsonify({"error": "forbidden", "message": "Invalid API key."}), 403
             elif not is_valid_agent_key(key, challenge_secret):
                 return jsonify({"error": "forbidden", "message": "Invalid API key."}), 403
-            if not _agent_key_limiter.check(_client_ip()):
+            if not _agent_key_rate_limiter.check(_client_ip()):
                 return jsonify({"error": "rate_limited", "message": "Too many payment verification requests. Please wait and try again."}), 429
             if not home_wallet_address:
                 return jsonify({"error": "server_error", "message": "Payment verification unavailable."}), 500
             if grant_store and grant_store.has(key):
                 return None
-            scan_result = _scan_for_payment(key, home_wallet_address, rpc_url, mint, min_payment=price_config["min_payment"], fee_info=fee_info)
+            scan_result = _scan_for_payment(key, home_wallet_address, rpc_url, mint, min_payment=price_config["min_payment"], fee_info=fee_info, payment_cache=payment_cache)
             paid = scan_result["paid"]
             if paid and grant_store:
                 tier = resolve_tier(scan_result["amount_paid"], price_config["pricing_tiers"])
@@ -165,7 +173,7 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
         if is_valid_cookie_value(cookie_val, challenge_secret, client_ip):
             return None
 
-        if not _challenge_issue_limiter.check(client_ip):
+        if not _challenge_issue_rate_limiter.check(client_ip):
             return make_response(_flask_json.dumps({"error": "rate_limited", "message": "Too many requests. Please try again later."}, indent=2), 429, {"Content-Type": "application/json"})
 
         nonce = make_nonce(challenge_secret, client_ip)
@@ -179,7 +187,7 @@ def register_agentpayments(app, *, challenge_secret: str, home_wallet_address: s
     @app.post("/__challenge/verify")
     def _verify():
         client_ip = _client_ip()
-        if not _challenge_limiter.check(client_ip):
+        if not _challenge_verify_limiter.check(client_ip):
             return jsonify({"error": "rate_limited", "message": "Too many verification attempts. Please wait and try again."}), 429
         nonce = request.form.get("nonce", "")[:MAX_NONCE_LENGTH]
         return_to = request.form.get("return_to", "/")[:MAX_RETURN_TO_LENGTH]
