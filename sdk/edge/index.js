@@ -479,11 +479,18 @@ export function isPublicPath(pathname, allowlist = []) {
   return false;
 }
 
+// Only `Sec-Fetch-Mode: navigate` / `Sec-Fetch-Dest: document` count as proof of a
+// browser — these values are set exclusively for top-level navigations and are not
+// reachable through the fetch()/XHR APIs. Merely checking for the *presence* of
+// either header is not enough: Node's built-in fetch() (undici) unconditionally sends
+// `sec-fetch-mode: cors` on every outgoing request (not overridable via `headers`,
+// it's a forbidden header), which misclassified fetch()-based agents as browsers and
+// served them the HTML challenge instead of the 402 JSON they need to read to pay.
 const BROWSER_UA_RE = /(Chrome|Chromium|Firefox|Safari|Edg|OPR|Opera|SamsungBrowser|UCBrowser|Mobile Safari)/i;
 const BOT_UA_RE = /bot|crawl|spider|slurp|mediapartners|adsbot/i;
 
 export function isBrowser(request) {
-  if (request.headers.get('sec-fetch-mode') || request.headers.get('sec-fetch-dest')) return true;
+  if (request.headers.get('sec-fetch-mode') === 'navigate' || request.headers.get('sec-fetch-dest') === 'document') return true;
   const ua = request.headers.get('user-agent') || '';
   return Boolean(ua && !BOT_UA_RE.test(ua) && BROWSER_UA_RE.test(ua));
 }

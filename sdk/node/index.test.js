@@ -350,6 +350,30 @@ describe('Browser detection', () => {
     assert.equal(res._status, 402);
   });
 
+  test('real browser navigation (Sec-Fetch-Mode: navigate + Chrome UA) treated as browser', async () => {
+    const gate = agentPaymentsGate({ challengeSecret: SECRET, homeWalletAddress: '', debug: true });
+    const req = mockReq({
+      path: '/',
+      headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'user-agent': chromeUA },
+    });
+    const res = mockRes();
+    await gate(req, res, () => {});
+    assert.notEqual(res._status, 402, 'real browser navigation should get the challenge, not a 402');
+  });
+
+  test('fetch()-shaped agent request (Sec-Fetch-Mode: cors, no Sec-Fetch-Dest, non-browser UA) gets 402', async () => {
+    // Node's built-in fetch() (undici) always sends sec-fetch-mode: cors but never
+    // sets Sec-Fetch-Dest. This must not be misclassified as a browser.
+    const gate = agentPaymentsGate({ challengeSecret: SECRET, homeWalletAddress: '', debug: true });
+    const req = mockReq({
+      path: '/',
+      headers: { 'sec-fetch-mode': 'cors', 'user-agent': 'my-agent/1.0' },
+    });
+    const res = mockRes();
+    await gate(req, res, () => {});
+    assert.equal(res._status, 402);
+  });
+
   test('public paths always pass through', async () => {
     const gate = agentPaymentsGate({ challengeSecret: SECRET, homeWalletAddress: '', debug: true });
     for (const p of ['/robots.txt', '/.well-known/agent-access.json']) {
