@@ -407,41 +407,61 @@ async function _scanForPayment(agentKey, walletAddress, rpcUrls, usdcMint, minPa
       const innerInstructions = tx.meta?.innerInstructions || [];
       const allInstructions = [...instructions, ...innerInstructions.flatMap((inner) => inner.instructions || [])];
 
+      // Memo check stays instruction-based — memo instructions have no
+      // balance signature to diff.
       let hasMemo = false;
-      let hasPayment = false;
-      let hasFeePayment = !feeInfo; // vacuously satisfied when no fee is required
-      let matchedAmountMicro = null;
-
       for (const ix of allInstructions) {
         if (ix.program === 'spl-memo' || ix.programId === MEMO_PROGRAM) {
           const memo = typeof ix.parsed === 'string' ? ix.parsed : '';
-          if (memo.includes(agentKey)) hasMemo = true;
-        }
-
-        if (ix.program === 'spl-token') {
-          const parsed = ix.parsed || {};
-          if (parsed.type === 'transfer' || parsed.type === 'transferChecked') {
-            const info = parsed.info || {};
-            // Payment must be delivered to one of the vendor's or fee wallet's USDC
-            // token accounts — anything else is irrelevant.
-            const isVendorDest = vendorUsdcAccounts.has(info.destination);
-            const isFeeDest = feeUsdcAccounts !== null && feeUsdcAccounts.has(info.destination);
-            if (!isVendorDest && !isFeeDest) continue;
-            if (parsed.type === 'transferChecked' && info.mint !== usdcMint) continue;
-            // Use integer base-unit comparison to avoid float precision issues at
-            // the payment threshold. tokenAmount.amount (transferChecked) and
-            // amount (transfer) are both integer strings in micro-USDC.
-            const amountStr = info.tokenAmount?.amount ?? info.amount ?? '0';
-            const amountMicro = parseInt(amountStr, 10);
-            if (Number.isNaN(amountMicro)) continue;
-            const minPaymentMicro = Math.round(minPayment * 1e6);
-            if (isVendorDest && amountMicro >= minPaymentMicro) { hasPayment = true; matchedAmountMicro = amountMicro; }
-            else if (isFeeDest && amountMicro >= feeAmountMicro) hasFeePayment = true;
-          }
+          if (memo.includes(agentKey)) { hasMemo = true; break; }
         }
       }
+      if (!hasMemo) continue;
 
-      if (hasMemo && hasPayment && hasFeePayment) return { paid: true, amountPaid: matchedAmountMicro / 1e6 };
+      // Payment amount comes from the actual balance change on the vendor's
+      // (and fee wallet's) USDC token account(s), not from parsing a specific
+      // transfer instruction. This is robust to CPI-nested transfers,
+      // Token-2022 (or any other token program) transfers, and fee-on-transfer
+      // extensions — it measures what the vendor's account actually received,
+      // regardless of which program or instruction path moved the tokens.
+      // accountIndex resolves against accountKeys + address-lookup-table
+      // accounts (appended after static keys) for versioned transactions.
+      const staticKeys = (tx.transaction?.message?.accountKeys || []).map((k) => (typeof k === 'string' ? k : k.pubkey));
+      const loadedWritable = tx.meta?.loadedAddresses?.writable || [];
+      const loadedReadonly = tx.meta?.loadedAddresses?.readonly || [];
+      const allKeys = [...staticKeys, ...loadedWritable, ...loadedReadonly];
+
+      // Index by accountIndex, not array position — an account created in
+      // this same transaction (e.g. via an idempotent ATA-creation
+      // instruction) has no preTokenBalances entry at all; treat that as 0.
+      const preByIndex = new Map((tx.meta?.preTokenBalances || []).map((b) => [b.accountIndex, b]));
+      const postBalances = tx.meta?.postTokenBalances || [];
+
+      let vendorDeltaMicro = 0;
+      let feeDeltaMicro = 0;
+      for (const post of postBalances) {
+        if (post.mint !== usdcMint) continue;
+        const pubkey = allKeys[post.accountIndex];
+        const isVendorDest = vendorUsdcAccounts.has(pubkey);
+        const isFeeDest = feeUsdcAccounts !== null && feeUsdcAccounts.has(pubkey);
+        if (!isVendorDest && !isFeeDest) continue;
+
+        const pre = preByIndex.get(post.accountIndex);
+        const preMicro = pre ? parseInt(pre.uiTokenAmount?.amount ?? '0', 10) : 0;
+        const postMicro = parseInt(post.uiTokenAmount?.amount ?? '0', 10);
+        if (Number.isNaN(preMicro) || Number.isNaN(postMicro)) continue;
+        const delta = postMicro - preMicro;
+        if (delta <= 0) continue; // only inflows count — an outflow must never offset toward the threshold
+
+        if (isVendorDest) vendorDeltaMicro += delta;
+        else feeDeltaMicro += delta;
+      }
+
+      const minPaymentMicro = Math.round(minPayment * 1e6);
+      const hasPayment = vendorDeltaMicro >= minPaymentMicro;
+      const hasFeePayment = !feeInfo || feeDeltaMicro >= feeAmountMicro;
+
+      if (hasPayment && hasFeePayment) return { paid: true, amountPaid: vendorDeltaMicro / 1e6 };
     }
   } catch (error) {
     gateLog('error', 'Solana RPC error', { error: error.message });
