@@ -34,3 +34,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_daily_unique
 
 CREATE INDEX IF NOT EXISTS idx_usage_daily_vendor
   ON usage_daily (vendor_id, day DESC);
+
+-- Domains a vendor has proven ownership of (see api/domain-verify.js). A verified
+-- domain is a prerequisite for payout onboarding.
+CREATE TABLE IF NOT EXISTS vendor_domains (
+  domain_id           VARCHAR(8)   PRIMARY KEY,
+  vendor_id           VARCHAR(8)   NOT NULL REFERENCES vendors(vendor_id) ON DELETE CASCADE,
+  domain              VARCHAR(255) NOT NULL,
+  verification_token  VARCHAR(64)  NOT NULL,
+  verified             BOOLEAN     NOT NULL DEFAULT FALSE,
+  verified_at          BIGINT,
+  created_at           BIGINT      NOT NULL,
+  UNIQUE (vendor_id, domain)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vendor_domains_vendor
+  ON vendor_domains (vendor_id);

@@ -33,12 +33,15 @@ function maskApiKey(key) {
  * @param {string|null} opts.platformFeeWallet   — current global fee wallet, or null if fee enforcement is off
  * @param {number|null} opts.platformFeeRatePct  — current global fee rate, meaningful only when platformFeeWallet is set
  * @param {string} [opts.newApiKey]              — set immediately after a rotation, shown once in a reveal banner
+ * @param {Array}  [opts.domains]                — vendor's registered domains, see serializeDomain in server.js
+ * @param {string} [opts.domainError]            — error message from the last domain action, shown inline
  */
 function dashboardHtml(vendor, thisMonth, dailyUsage, opts = {}) {
-  const { platformFeeWallet, platformFeeRatePct, newApiKey } = opts;
+  const { platformFeeWallet, platformFeeRatePct, newApiKey, domains, domainError } = opts;
   const chart = buildChart(dailyUsage);
   const feeHtml = buildFeeSection(platformFeeWallet, platformFeeRatePct);
   const apiKeyHtml = buildApiKeySection(vendor, newApiKey);
+  const domainsHtml = buildDomainsSection(domains, domainError);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -81,6 +84,22 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, opts = {}) {
     .new-key-value { display: block; font-family: monospace; font-size: 13px; background: #fff; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; word-break: break-all; }
     .rotate-link { display: inline-block; margin-top: 16px; font-size: 13px; color: #b91c1c; text-decoration: none; font-weight: 500; }
     .rotate-link:hover { text-decoration: underline; }
+    .error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 6px; padding: 10px 14px; font-size: 13px; }
+    .domain-row { padding: 14px 0; border-bottom: 1px solid #f0f0f0; }
+    .domain-row:last-of-type { border-bottom: none; }
+    .domain-info { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .domain-name { font-family: monospace; font-size: 14px; }
+    .domain-instructions { font-size: 12px; color: #666; line-height: 1.7; margin-bottom: 10px; }
+    .domain-instructions code { background: #f5f5f5; padding: 2px 5px; border-radius: 4px; }
+    .token-value { display: block; margin-top: 4px; word-break: break-all; font-family: monospace; }
+    .domain-actions { display: flex; gap: 10px; }
+    .mini-btn { padding: 6px 12px; font-size: 12px; font-weight: 600; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; color: #333; }
+    .mini-btn:hover { background: #f5f5f5; }
+    .mini-btn.danger { color: #b91c1c; border-color: #fecaca; }
+    .mini-btn.danger:hover { background: #fef2f2; }
+    .add-domain-form { margin-top: 16px; display: flex; gap: 8px; }
+    .add-domain-form input { flex: 1; padding: 9px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+    .add-domain-form input:focus { outline: none; border-color: #111; }
   </style>
 </head>
 <body>
@@ -127,6 +146,8 @@ function dashboardHtml(vendor, thisMonth, dailyUsage, opts = {}) {
     ${feeHtml}
 
     ${apiKeyHtml}
+
+    ${domainsHtml}
 
     <div class="section">
       <h2>Account details</h2>
@@ -213,6 +234,42 @@ function buildApiKeySection(vendor, newApiKey) {
           <span class="v">${escapeHtml(maskApiKey(currentKey))}</span>
         </div>`}
       <a class="rotate-link" href="/dashboard/rotate-key">Rotate API key →</a>
+    </div>`;
+}
+
+function buildDomainsSection(domains, domainError) {
+  const rows = (domains || []).map((d) => `
+    <div class="domain-row">
+      <div class="domain-info">
+        <span class="domain-name">${escapeHtml(d.domain)}</span>
+        ${d.verified ? '<span class="badge verified">Verified</span>' : '<span class="badge unverified">Unverified</span>'}
+      </div>
+      ${d.verified ? '' : `
+        <div class="domain-instructions">
+          Publish a file at <code>${escapeHtml(d.verifyUrl)}</code> whose contents are exactly:
+          <code class="token-value">${escapeHtml(d.verificationToken)}</code>
+        </div>`}
+      <div class="domain-actions">
+        ${d.verified ? '' : `
+          <form method="POST" action="/dashboard/domains/${encodeURIComponent(d.id)}/verify">
+            <button type="submit" class="mini-btn">Check now</button>
+          </form>`}
+        <form method="POST" action="/dashboard/domains/${encodeURIComponent(d.id)}/delete">
+          <button type="submit" class="mini-btn danger">Remove</button>
+        </form>
+      </div>
+    </div>`).join('') || '<p class="fee-note">No domains added yet.</p>';
+
+  return `
+    <div class="section">
+      <h2>Domain ownership</h2>
+      ${domainError ? `<div class="error" style="margin-bottom:16px">${escapeHtml(domainError)}</div>` : ''}
+      <p class="fee-note" style="margin-bottom:12px">Verify a domain to prove you control the resource you're gating with AgentPayments. This will be required before payout onboarding.</p>
+      ${rows}
+      <form method="POST" action="/dashboard/domains" class="add-domain-form">
+        <input type="text" name="domain" placeholder="example.com" required>
+        <button type="submit" class="mini-btn">Add domain</button>
+      </form>
     </div>`;
 }
 

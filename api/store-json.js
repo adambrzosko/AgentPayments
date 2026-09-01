@@ -19,9 +19,11 @@ const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'vendors.json');
 
 function read() {
   try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    if (!data.domains) data.domains = {}; // older files predate domain verification
+    return data;
   } catch {
-    return { vendors: {}, apiKeys: {}, verificationTokens: {} };
+    return { vendors: {}, apiKeys: {}, verificationTokens: {}, domains: {} };
   }
 }
 
@@ -119,5 +121,57 @@ module.exports = {
   keysIssuedThisMonth(vendorId) {
     // JSON store doesn't track monthly — return all-time as fallback
     return read().vendors[vendorId]?.keysIssued ?? 0;
+  },
+
+  // Domain ownership verification
+  addDomain({ domainId, vendorId, domain, verificationToken }) {
+    const data = read();
+    const dup = Object.values(data.domains).some((d) => d.vendorId === vendorId && d.domain === domain);
+    if (dup) {
+      const err = new Error('This domain is already registered on your account.');
+      err.code = 'DUPLICATE_DOMAIN';
+      throw err;
+    }
+    const record = {
+      domainId, vendorId, domain, verificationToken,
+      verified: false, verifiedAt: null, createdAt: Date.now(),
+    };
+    data.domains[domainId] = record;
+    write(data);
+    return record;
+  },
+
+  countDomains(vendorId) {
+    return Object.values(read().domains).filter((d) => d.vendorId === vendorId).length;
+  },
+
+  listDomains(vendorId) {
+    return Object.values(read().domains)
+      .filter((d) => d.vendorId === vendorId)
+      .sort((a, b) => b.createdAt - a.createdAt);
+  },
+
+  getDomainForVendor(vendorId, domainId) {
+    const d = read().domains[domainId];
+    return d && d.vendorId === vendorId ? d : null;
+  },
+
+  markDomainVerified(domainId) {
+    const data = read();
+    const d = data.domains[domainId];
+    if (!d) return null;
+    d.verified = true;
+    d.verifiedAt = Date.now();
+    write(data);
+    return d;
+  },
+
+  deleteDomain(vendorId, domainId) {
+    const data = read();
+    const d = data.domains[domainId];
+    if (!d || d.vendorId !== vendorId) return false;
+    delete data.domains[domainId];
+    write(data);
+    return true;
   },
 };
