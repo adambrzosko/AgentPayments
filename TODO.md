@@ -32,9 +32,7 @@
 * ~~Wire the test suites into CI~~ — `.github/workflows/ci.yml`'s Node/Edge/Python jobs only ran syntax/import checks before; every green PR checkmark reflected syntax validity, not the 48+29+137 tests actually passing. Added a real `node --test`/`npm test`/`pytest` step to each job, verified in the PR's own CI run (not just locally)
 * ~~Balance-delta payment verification~~ — `verifyPaymentOnChain`'s remaining hardening item, closed: paid amount now comes from `preTokenBalances`/`postTokenBalances` (the actual balance change), not instruction parsing — token-program-agnostic, robust to nested CPI transfers and fee-on-transfer extensions. See ROADMAP
 * ~~E2E + load test scripts~~ — `scripts/e2e-demo.js` (browser/agent-402/paid-key/public-path flows against the live demo, scheduled nightly) and `scripts/load-test.js` (local rate-limiter flood, offline). The E2E script's first run caught a real issue: `demo.agentpayments.cloud` needs a redeploy to pick up the isBrowser() fix — see ROADMAP
-
-### In Progress
-* Improve bot communication — ChatGPT and other LLM agents don't reliably read the 402 response instructions. The `isBrowser()`/fetch() misclassification (see ROADMAP) is now fixed and was a confirmed contributor: LangChain.js's `ChatOpenAI`/`ChatAnthropic` sit on `openai-node`/`anthropic-sdk-typescript`, both of which default to the global `fetch()` with no way to opt out — this should measurably help now, remaining gap (if any) needs re-assessment
+* ~~Improve bot communication~~ — ChatGPT and other LLM agents weren't reliably reading the 402 response instructions. Root cause confirmed and fixed: the `isBrowser()`/fetch() misclassification (see ROADMAP). `demo.agentpayments.cloud` was redeployed with the fix, then validated with Node's real global `fetch()` (the exact transport `langchain-core`'s `AsyncCaller.fetch()`, `openai-node`, and `anthropic-sdk-typescript` all use, unmodified, no manual header spoofing) — it now correctly receives the machine-readable 402 JSON instead of the HTML challenge page. `scripts/e2e-demo.js` passes 6/6 against the live demo
 
 ## Ultimate Goals
 
