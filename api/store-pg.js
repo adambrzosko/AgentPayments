@@ -161,4 +161,61 @@ module.exports = {
     );
     return rows[0]?.total ?? 0;
   },
+
+  // ---------------------------------------------------------------------------
+  // Domain ownership verification
+  // ---------------------------------------------------------------------------
+
+  async addDomain({ domainId, vendorId, domain, verificationToken }) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO vendor_domains (domain_id, vendor_id, domain, verification_token, verified, created_at)
+         VALUES ($1, $2, $3, $4, FALSE, $5)
+         RETURNING *`,
+        [domainId, vendorId, domain, verificationToken, Date.now()],
+      );
+      return rows[0];
+    } catch (err) {
+      if (err.code === '23505') {
+        const e = new Error('This domain is already registered on your account.');
+        e.code = 'DUPLICATE_DOMAIN';
+        throw e;
+      }
+      throw err;
+    }
+  },
+
+  async countDomains(vendorId) {
+    const { rows } = await pool.query('SELECT COUNT(*)::INTEGER AS n FROM vendor_domains WHERE vendor_id = $1', [vendorId]);
+    return rows[0]?.n ?? 0;
+  },
+
+  async listDomains(vendorId) {
+    const { rows } = await pool.query('SELECT * FROM vendor_domains WHERE vendor_id = $1 ORDER BY created_at DESC', [vendorId]);
+    return rows;
+  },
+
+  async getDomainForVendor(vendorId, domainId) {
+    const { rows } = await pool.query(
+      'SELECT * FROM vendor_domains WHERE vendor_id = $1 AND domain_id = $2',
+      [vendorId, domainId],
+    );
+    return rows[0] || null;
+  },
+
+  async markDomainVerified(domainId) {
+    const { rows } = await pool.query(
+      'UPDATE vendor_domains SET verified = TRUE, verified_at = $2 WHERE domain_id = $1 RETURNING *',
+      [domainId, Date.now()],
+    );
+    return rows[0] || null;
+  },
+
+  async deleteDomain(vendorId, domainId) {
+    const { rowCount } = await pool.query(
+      'DELETE FROM vendor_domains WHERE vendor_id = $1 AND domain_id = $2',
+      [vendorId, domainId],
+    );
+    return rowCount > 0;
+  },
 };

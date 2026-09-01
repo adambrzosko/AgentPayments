@@ -33,6 +33,7 @@
 * ~~Balance-delta payment verification~~ — `verifyPaymentOnChain`'s remaining hardening item, closed: paid amount now comes from `preTokenBalances`/`postTokenBalances` (the actual balance change), not instruction parsing — token-program-agnostic, robust to nested CPI transfers and fee-on-transfer extensions. See ROADMAP
 * ~~E2E + load test scripts~~ — `scripts/e2e-demo.js` (browser/agent-402/paid-key/public-path flows against the live demo, scheduled nightly) and `scripts/load-test.js` (local rate-limiter flood, offline). The E2E script's first run caught a real issue: `demo.agentpayments.cloud` needs a redeploy to pick up the isBrowser() fix — see ROADMAP
 * ~~Improve bot communication~~ — ChatGPT and other LLM agents weren't reliably reading the 402 response instructions. Root cause confirmed and fixed: the `isBrowser()`/fetch() misclassification (see ROADMAP). `demo.agentpayments.cloud` was redeployed with the fix, then validated with Node's real global `fetch()` (the exact transport `langchain-core`'s `AsyncCaller.fetch()`, `openai-node`, and `anthropic-sdk-typescript` all use, unmodified, no manual header spoofing) — it now correctly receives the machine-readable 402 JSON instead of the HTML challenge page. `scripts/e2e-demo.js` passes 6/6 against the live demo
+* ~~Vendor UI: domain ownership verification~~ — first half of the Vendor UI goal below. A vendor adds a domain in the dashboard (`api/`), gets a per-domain token, and proves control by publishing it at `https://{domain}/.well-known/agentpayments-verify.txt` (same public-path convention the SDKs already carve out for `.well-known/`). New `api/domain-verify.js`, `POST/GET /v1/domains`, `POST /v1/domains/:id/verify`, `DELETE /v1/domains/:id`, and a Domains section in the dashboard UI (`api/dashboard.js`). Verification is a server-initiated fetch to a vendor-supplied host — hardened against SSRF with strict hostname format validation, a DNS pre-check rejecting private/loopback/link-local/reserved IPs (incl. cloud metadata endpoints), HTTPS-only with redirects never followed, and a bounded timeout/response size. 33 tests (`api/test/domain-verify.test.js`, additions to `api/test/server.test.js`), including live checks against a real (non-spoofed) domain. Remaining: payout onboarding (Stripe Connect Express is the planned approach — Stripe hosts the bank-details/KYC UI directly, so AgentPayments never touches raw bank account numbers), gated on a vendor having a verified domain.
 
 ## Ultimate Goals
 
@@ -45,6 +46,8 @@
 
 #### Vendor UI
 * A website where a vendor enters their bank details, verifies ownership of their resource
+  * ~~Resource ownership verification~~ — done, see Completed above
+  * Bank details / payout onboarding — not started; planned via Stripe Connect Express rather than collecting raw bank details ourselves
 
 #### Agent Wallet
 * A USDC/Solana wallet service for AI agents

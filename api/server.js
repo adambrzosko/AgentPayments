@@ -11,6 +11,10 @@
  *   GET  /v1/account                       — account info + verificationSecret (auth)
  *   POST /v1/keys/issue                    — issue a platform-signed key (auth, metered)
  *   GET  /v1/usage                         — usage stats (auth)
+ *   POST /v1/domains                       — register a domain to verify ownership of (auth)
+ *   GET  /v1/domains                       — list registered domains (auth)
+ *   POST /v1/domains/:id/verify            — check a domain's verification file (auth)
+ *   DELETE /v1/domains/:id                 — remove a domain (auth)
  *   POST /v1/keys/verify                   — public key validation (no auth)
  *   GET  /dashboard                        — vendor dashboard login page
  *   POST /dashboard/login                  — authenticate → session cookie
@@ -49,6 +53,7 @@ const store = require('./store');
 const { sendVerificationEmail } = require('./email');
 const { createCustomerAndSubscription, recordKeyIssuance, getCurrentUsage } = require('./stripe-billing');
 const { dashboardHtml, loginHtml, rotateKeyConfirmHtml } = require('./dashboard');
+const { isValidDomainFormat, verifyDomainOwnership } = require('./domain-verify');
 
 // ---------------------------------------------------------------------------
 // Config
@@ -100,6 +105,10 @@ function timingSafeEqualStr(a, b) {
 // ---------------------------------------------------------------------------
 
 function newVendorId() {
+  return randomHex(4);
+}
+
+function newDomainId() {
   return randomHex(4);
 }
 
@@ -176,6 +185,10 @@ const loginLimiter = new RateLimiter(60 * 1000, 20);
 // Public key verification: high ceiling since this sees real vendor-server traffic,
 // but still bounded as a DoS backstop against garbage-key floods.
 const verifyLimiter = new RateLimiter(60 * 1000, 600);
+// Domain verification: each check makes an outbound DNS lookup + HTTPS fetch to a
+// vendor-supplied host, so it gets its own tighter budget rather than sharing apiLimiter.
+const domainVerifyLimiter = new RateLimiter(60 * 1000, 10);
+const MAX_DOMAINS_PER_VENDOR = 20;
 
 // NOTE: all limiters above are in-memory (per-process) and only enforce correctly on
 // a single instance. If this ever scales to multiple instances, each instance has its
@@ -427,6 +440,103 @@ app.get('/v1/usage', authenticate, async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
+// Domain ownership verification
+// ---------------------------------------------------------------------------
+
+function serializeDomain(d) {
+  return {
+    id: d.domain_id || d.domainId,
+    domain: d.domain,
+    verified: Boolean(d.verified),
+    verifiedAt: d.verified_at ?? d.verifiedAt ?? null,
+    createdAt: d.created_at ?? d.createdAt,
+    verificationToken: d.verification_token ?? d.verificationToken,
+    verifyUrl: `https://${d.domain}/.well-known/agentpayments-verify.txt`,
+  };
+}
+
+app.post('/v1/domains', authenticate, async (req, res, next) => {
+  try {
+    if (!apiLimiter.check(clientIp(req))) {
+      return res.status(429).json({ error: 'rate_limited', message: 'Too many requests.' });
+    }
+    const vendorId = req.vendor.vendor_id || req.vendor.vendorId;
+    const { domain } = req.body || {};
+    const normalized = typeof domain === 'string' ? domain.trim().toLowerCase() : '';
+    if (!isValidDomainFormat(normalized)) {
+      return res.status(400).json({
+        error: 'bad_request',
+        message: 'domain must be a valid public hostname (e.g. example.com) — no scheme, path, or port.',
+      });
+    }
+    if ((await store.countDomains(vendorId)) >= MAX_DOMAINS_PER_VENDOR) {
+      return res.status(400).json({ error: 'domain_limit_reached', message: `You can register at most ${MAX_DOMAINS_PER_VENDOR} domains.` });
+    }
+
+    let record;
+    try {
+      record = await store.addDomain({ domainId: newDomainId(), vendorId, domain: normalized, verificationToken: randomHex(16) });
+    } catch (err) {
+      if (err.code === 'DUPLICATE_DOMAIN') {
+        return res.status(409).json({ error: 'conflict', message: err.message });
+      }
+      throw err;
+    }
+    res.status(201).json(serializeDomain(record));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/v1/domains', authenticate, async (req, res, next) => {
+  try {
+    const vendorId = req.vendor.vendor_id || req.vendor.vendorId;
+    const domains = await store.listDomains(vendorId);
+    res.json({ domains: domains.map(serializeDomain) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/v1/domains/:id/verify', authenticate, async (req, res, next) => {
+  try {
+    if (!domainVerifyLimiter.check(clientIp(req))) {
+      return res.status(429).json({ error: 'rate_limited', message: 'Too many verification attempts. Try again in a minute.' });
+    }
+    const vendorId = req.vendor.vendor_id || req.vendor.vendorId;
+    const record = await store.getDomainForVendor(vendorId, req.params.id);
+    if (!record) return res.status(404).json({ error: 'not_found', message: 'Domain not found.' });
+    if (record.verified) return res.json(serializeDomain(record));
+
+    const token = record.verification_token ?? record.verificationToken;
+    const result = await verifyDomainOwnership(record.domain, token);
+    if (!result.verified) {
+      return res.status(422).json({
+        error: 'verification_failed',
+        reason: result.reason,
+        message: `Could not verify ${record.domain}. Make sure https://${record.domain}/.well-known/agentpayments-verify.txt returns exactly the token, with no redirects.`,
+      });
+    }
+
+    const updated = await store.markDomainVerified(record.domain_id || record.domainId);
+    res.json(serializeDomain(updated));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/v1/domains/:id', authenticate, async (req, res, next) => {
+  try {
+    const vendorId = req.vendor.vendor_id || req.vendor.vendorId;
+    const removed = await store.deleteDomain(vendorId, req.params.id);
+    if (!removed) return res.status(404).json({ error: 'not_found', message: 'Domain not found.' });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /v1/keys/verify  (public — no auth)
 // ---------------------------------------------------------------------------
 
@@ -479,12 +589,17 @@ app.get('/dashboard', async (req, res, next) => {
     }
 
     const vendorId = vendor.vendor_id || vendor.vendorId;
-    const [thisMonth, dailyUsage] = await Promise.all([
+    const [thisMonth, dailyUsage, domains] = await Promise.all([
       store.keysIssuedThisMonth(vendorId),
       store.getDailyUsage(vendorId, 30),
+      store.listDomains(vendorId),
     ]);
 
-    res.send(dashboardHtml(vendor, thisMonth, dailyUsage, { platformFeeWallet, platformFeeRatePct }));
+    res.send(dashboardHtml(vendor, thisMonth, dailyUsage, {
+      platformFeeWallet, platformFeeRatePct,
+      domains: domains.map(serializeDomain),
+      domainError: req.query.domainError || null,
+    }));
   } catch (err) {
     next(err);
   }
@@ -509,12 +624,83 @@ app.post('/dashboard/rotate-key', async (req, res, next) => {
     const newApiKey = makeVendorApiKey(vendorId);
     const updated = await store.setApiKey(vendorId, newApiKey);
 
-    const [thisMonth, dailyUsage] = await Promise.all([
+    const [thisMonth, dailyUsage, domains] = await Promise.all([
       store.keysIssuedThisMonth(vendorId),
       store.getDailyUsage(vendorId, 30),
+      store.listDomains(vendorId),
     ]);
 
-    res.send(dashboardHtml(updated, thisMonth, dailyUsage, { platformFeeWallet, platformFeeRatePct, newApiKey }));
+    res.send(dashboardHtml(updated, thisMonth, dailyUsage, {
+      platformFeeWallet, platformFeeRatePct, newApiKey,
+      domains: domains.map(serializeDomain),
+    }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/dashboard/domains', async (req, res, next) => {
+  try {
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) return res.send(loginHtml('Session expired. Please sign in again.'));
+    const vendorId = vendor.vendor_id || vendor.vendorId;
+
+    const domain = typeof req.body?.domain === 'string' ? req.body.domain.trim().toLowerCase() : '';
+    let error = null;
+    if (!isValidDomainFormat(domain)) {
+      error = 'Enter a valid domain, e.g. example.com — no https://, no path.';
+    } else if ((await store.countDomains(vendorId)) >= MAX_DOMAINS_PER_VENDOR) {
+      error = `You can register at most ${MAX_DOMAINS_PER_VENDOR} domains.`;
+    } else {
+      try {
+        await store.addDomain({ domainId: newDomainId(), vendorId, domain, verificationToken: randomHex(16) });
+      } catch (err) {
+        if (err.code === 'DUPLICATE_DOMAIN') error = err.message;
+        else throw err;
+      }
+    }
+    res.redirect(302, error ? `/dashboard?domainError=${encodeURIComponent(error)}` : '/dashboard');
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/dashboard/domains/:id/verify', async (req, res, next) => {
+  try {
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) return res.send(loginHtml('Session expired. Please sign in again.'));
+    const vendorId = vendor.vendor_id || vendor.vendorId;
+
+    let error = null;
+    if (!domainVerifyLimiter.check(clientIp(req))) {
+      error = 'Too many verification attempts. Try again in a minute.';
+    } else {
+      const record = await store.getDomainForVendor(vendorId, req.params.id);
+      if (!record) {
+        error = 'Domain not found.';
+      } else if (!record.verified) {
+        const token = record.verification_token ?? record.verificationToken;
+        const result = await verifyDomainOwnership(record.domain, token);
+        if (result.verified) {
+          await store.markDomainVerified(record.domain_id || record.domainId);
+        } else {
+          error = `Could not verify ${record.domain} — make sure the file is published with no redirects.`;
+        }
+      }
+    }
+    res.redirect(302, error ? `/dashboard?domainError=${encodeURIComponent(error)}` : '/dashboard');
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/dashboard/domains/:id/delete', async (req, res, next) => {
+  try {
+    const vendor = await requireDashboardVendor(req, res);
+    if (!vendor) return res.send(loginHtml('Session expired. Please sign in again.'));
+    const vendorId = vendor.vendor_id || vendor.vendorId;
+    await store.deleteDomain(vendorId, req.params.id);
+    res.redirect(302, '/dashboard');
   } catch (err) {
     next(err);
   }

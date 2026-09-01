@@ -185,3 +185,127 @@ test('stripe-billing module no-ops all functions when STRIPE_SECRET_KEY is unset
   await assert.doesNotReject(recordKeyIssuance('cus_123'));
   assert.equal(await getCurrentUsage('cus_123'), null);
 });
+
+// ---------------------------------------------------------------------------
+// Domain ownership verification
+// ---------------------------------------------------------------------------
+
+test('POST /v1/domains rejects an invalid domain and requires auth', async () => {
+  resetStore();
+  const reg = await register({ email: 'domains1@test.com', name: 'Domains Vendor' });
+  const auth = `Bearer ${reg.body.apiKey}`;
+
+  const noAuth = await request(app).post('/v1/domains').send({ domain: 'example.com' });
+  assert.equal(noAuth.status, 401);
+
+  const badFormat = await request(app).post('/v1/domains').set('Authorization', auth).send({ domain: 'https://example.com/path' });
+  assert.equal(badFormat.status, 400);
+
+  const internal = await request(app).post('/v1/domains').set('Authorization', auth).send({ domain: 'service.internal' });
+  assert.equal(internal.status, 400);
+});
+
+test('POST /v1/domains -> GET /v1/domains -> DELETE round trip, with duplicate rejection', async () => {
+  resetStore();
+  const reg = await register({ email: 'domains2@test.com', name: 'Domains Vendor 2' });
+  const auth = `Bearer ${reg.body.apiKey}`;
+
+  const created = await request(app).post('/v1/domains').set('Authorization', auth).send({ domain: 'Example.com' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.domain, 'example.com'); // normalized lowercase
+  assert.equal(created.body.verified, false);
+  assert.ok(created.body.verificationToken);
+  assert.equal(created.body.verifyUrl, 'https://example.com/.well-known/agentpayments-verify.txt');
+
+  const dup = await request(app).post('/v1/domains').set('Authorization', auth).send({ domain: 'example.com' });
+  assert.equal(dup.status, 409);
+
+  const list = await request(app).get('/v1/domains').set('Authorization', auth);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.domains.length, 1);
+  assert.equal(list.body.domains[0].id, created.body.id);
+
+  const del = await request(app).delete(`/v1/domains/${created.body.id}`).set('Authorization', auth);
+  assert.equal(del.status, 204);
+
+  const listAfter = await request(app).get('/v1/domains').set('Authorization', auth);
+  assert.equal(listAfter.body.domains.length, 0);
+
+  const delAgain = await request(app).delete(`/v1/domains/${created.body.id}`).set('Authorization', auth);
+  assert.equal(delAgain.status, 404);
+});
+
+test('domain endpoints are scoped per-vendor — one vendor cannot see or delete another\'s domain', async () => {
+  resetStore();
+  const regA = await register({ email: 'vendorA@test.com', name: 'Vendor A' });
+  const regB = await register({ email: 'vendorB@test.com', name: 'Vendor B' });
+  const authA = `Bearer ${regA.body.apiKey}`;
+  const authB = `Bearer ${regB.body.apiKey}`;
+
+  const created = await request(app).post('/v1/domains').set('Authorization', authA).send({ domain: 'vendor-a-site.com' });
+  assert.equal(created.status, 201);
+
+  const listB = await request(app).get('/v1/domains').set('Authorization', authB);
+  assert.equal(listB.body.domains.length, 0);
+
+  const verifyB = await request(app).post(`/v1/domains/${created.body.id}/verify`).set('Authorization', authB);
+  assert.equal(verifyB.status, 404);
+
+  const delB = await request(app).delete(`/v1/domains/${created.body.id}`).set('Authorization', authB);
+  assert.equal(delB.status, 404);
+});
+
+test('POST /v1/domains/:id/verify against a real domain with no verification file fails with a clear reason', async () => {
+  resetStore();
+  const reg = await register({ email: 'domains3@test.com', name: 'Domains Vendor 3' });
+  const auth = `Bearer ${reg.body.apiKey}`;
+
+  const created = await request(app).post('/v1/domains').set('Authorization', auth).send({ domain: 'example.com' });
+  assert.equal(created.status, 201);
+
+  // Live network call against example.com (RFC 2606 reserved, stable, always resolves) —
+  // it has no /.well-known/agentpayments-verify.txt, so this exercises the real
+  // token-mismatch/404 failure path end to end.
+  const verify = await request(app).post(`/v1/domains/${created.body.id}/verify`).set('Authorization', auth);
+  assert.equal(verify.status, 422);
+  assert.equal(verify.body.error, 'verification_failed');
+});
+
+test('dashboard: add domain, see it listed, remove it', async () => {
+  resetStore();
+  const reg = await register({ email: 'dashdomains@test.com', name: 'Dash Domains Vendor' });
+  const login = await request(app).post('/dashboard/login').type('form').send({ key: reg.body.apiKey });
+  const cookie = login.headers['set-cookie'].find((c) => c.startsWith('agp_dash=')).split(';')[0];
+
+  const add = await request(app).post('/dashboard/domains').set('Cookie', cookie).type('form').send({ domain: 'my-dash-site.com' });
+  assert.equal(add.status, 302);
+  assert.equal(add.headers.location, '/dashboard');
+
+  const page = await request(app).get('/dashboard').set('Cookie', cookie);
+  assert.equal(page.status, 200);
+  assert.match(page.text, /my-dash-site\.com/);
+  assert.match(page.text, /Unverified/);
+
+  const list = await request(app).get('/v1/domains').set('Authorization', `Bearer ${reg.body.apiKey}`);
+  const domainId = list.body.domains[0].id;
+
+  const remove = await request(app).post(`/dashboard/domains/${domainId}/delete`).set('Cookie', cookie);
+  assert.equal(remove.status, 302);
+
+  const pageAfter = await request(app).get('/dashboard').set('Cookie', cookie);
+  assert.doesNotMatch(pageAfter.text, /my-dash-site\.com/);
+});
+
+test('dashboard: adding an invalid domain redirects with domainError shown on the page', async () => {
+  resetStore();
+  const reg = await register({ email: 'dashbad@test.com', name: 'Dash Bad Vendor' });
+  const login = await request(app).post('/dashboard/login').type('form').send({ key: reg.body.apiKey });
+  const cookie = login.headers['set-cookie'].find((c) => c.startsWith('agp_dash=')).split(';')[0];
+
+  const add = await request(app).post('/dashboard/domains').set('Cookie', cookie).type('form').send({ domain: 'not a domain' });
+  assert.equal(add.status, 302);
+  assert.match(add.headers.location, /^\/dashboard\?domainError=/);
+
+  const page = await request(app).get(add.headers.location).set('Cookie', cookie);
+  assert.match(page.text, /Enter a valid domain/);
+});
